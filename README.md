@@ -1,4 +1,6 @@
-# atf-eval-poc
+# atf-eval
+
+[![GitHub](https://img.shields.io/badge/GitHub-2597688js%2Fatf--eval-blue?logo=github)](https://github.com/2597688js/atf-eval)
 
 Standalone evaluation framework for **Agent Trajectory Fidelity (ATF)** — scores how
 closely an agent's observed execution trajectory (nodes visited, state transitions, tool
