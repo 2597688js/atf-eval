@@ -1,6 +1,13 @@
 """Shared fixtures: paths into agent-eval-main (the canonical spec/schema
-repo) and a loaded JSON Schema validator for the normalized trajectory
-contract."""
+repo -- a separate, standalone repo that lives as a local sibling folder,
+NOT part of this repo) and a loaded JSON Schema validator for the normalized
+trajectory contract.
+
+Tests that depend on agent-eval-main's canonical schema/fixtures skip
+gracefully (not fail) when that folder isn't present locally -- e.g. a fresh
+clone of this repo alone, or CI without the sibling checkout -- since it is
+external spec infrastructure, not bundled here.
+"""
 from __future__ import annotations
 
 import json
@@ -16,6 +23,11 @@ AGENT_EVAL_MAIN = REPO_ROOT / "agent-eval-main"
 @pytest.fixture(scope="session")
 def canonical_schema() -> dict:
     schema_path = AGENT_EVAL_MAIN / "schema" / "normalized_trajectory.schema.json"
+    if not schema_path.exists():
+        pytest.skip(
+            "agent-eval-main not found locally (it's a separate repo, not bundled here) -- "
+            "clone it as a sibling folder to run schema-conformance tests"
+        )
     return json.loads(schema_path.read_text(encoding="utf-8"))
 
 

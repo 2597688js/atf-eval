@@ -2,6 +2,10 @@
 .env
 *.pypirc
 
+# agent-eval-main is a separate, standalone repo -- lives here as a local
+# sibling folder for spec reference, never tracked in atf-eval itself
+agent-eval-main/
+
 # Python
 __pycache__/
 *.py[cod]

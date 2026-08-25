@@ -23,6 +23,11 @@ SCENARIOS = AGENT_EVAL_MAIN / "tests" / "fixtures" / "scenarios"
 
 @pytest.fixture(scope="module")
 def golden_turns():
+    if not GOLDEN.exists():
+        pytest.skip(
+            "agent-eval-main not found locally (it's a separate repo, not bundled here) -- "
+            "clone it as a sibling folder to run this conformance suite"
+        )
     return load_golden_turns(GOLDEN)
 
 
