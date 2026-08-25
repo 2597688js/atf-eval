@@ -1,0 +1,24 @@
+# secrets
+.env
+*.pypirc
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# build artifacts
+dist/
+build/
+
+# virtualenvs
+.venv/
+venv/
+
+# generated run output
+results/
+*.log
+
+# OS
+.DS_Store

@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-eval/schema/normalized-trajectory/v1",
+  "title": "Canonical Normalized Trajectory",
+  "type": "object",
+  "required": ["trace_id", "schema_version", "availability", "turns"],
+  "properties": {
+    "trace_id": { "type": "string" },
+    "agent_id": { "type": "string" },
+    "adapter_id": { "type": "string" },
+    "schema_version": { "type": "string" },
+    "metadata": { "type": "object", "additionalProperties": true },
+    "availability": { "$ref": "#/$defs/availability" },
+    "turns": { "type": "array", "items": { "$ref": "#/$defs/turn" } },
+    "final_state": { "type": "object", "additionalProperties": true },
+    "outcome": { "$ref": "#/$defs/outcome" }
+  },
+  "$defs": {
+    "availability": {
+      "type": "object",
+      "required": ["nodes", "state", "tools", "routing", "outcome"],
+      "properties": {
+        "nodes": { "$ref": "#/$defs/availabilityStatus" },
+        "state": { "$ref": "#/$defs/availabilityStatus" },
+        "tools": { "$ref": "#/$defs/availabilityStatus" },
+        "routing": { "$ref": "#/$defs/availabilityStatus" },
+        "outcome": { "$ref": "#/$defs/availabilityStatus" }
+      },
+      "additionalProperties": false
+    },
+    "availabilityStatus": {
+      "type": "string",
+      "enum": ["available", "unavailable", "not_applicable"]
+    },
+    "turn": {
+      "type": "object",
+      "required": ["turn_id", "nodes"],
+      "properties": {
+        "turn_id": { "type": "integer" },
+        "input": { "type": "object", "additionalProperties": true },
+        "output": { "type": "object", "additionalProperties": true },
+        "nodes": { "type": "array", "items": { "$ref": "#/$defs/node" } },
+        "unassociated_tool_calls": { "type": "array", "items": { "$ref": "#/$defs/toolCall" } },
+        "routing": { "type": "object", "additionalProperties": true }
+      },
+      "additionalProperties": false
+    },
+    "node": {
+      "type": "object",
+      "required": ["node_id", "sequence", "state_changes", "tool_calls"],
+      "properties": {
+        "node_id": { "type": "string" },
+        "sequence": { "type": "integer" },
+        "output": { "type": "object", "additionalProperties": true },
+        "state_changes": { "type": "array", "items": { "$ref": "#/$defs/stateChange" } },
+        "tool_calls": { "type": "array", "items": { "$ref": "#/$defs/toolCall" } }
+      },
+      "additionalProperties": false
+    },
+    "stateChange": {
+      "type": "object",
+      "required": ["key", "old", "new"],
+      "properties": {
+        "key": { "type": "string" },
+        "old": {},
+        "new": {}
+      },
+      "additionalProperties": false
+    },
+    "toolCall": {
+      "type": "object",
+      "required": ["tool_id", "sequence", "status"],
+      "properties": {
+        "tool_id": { "type": "string" },
+        "sequence": { "type": "integer" },
+        "input": { "type": "object", "additionalProperties": true },
+        "output": { "type": "object", "additionalProperties": true },
+        "status": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "outcome": {
+      "type": "object",
+      "required": ["id"],
+      "properties": {
+        "id": { "type": "string" },
+        "attributes": { "type": "object", "additionalProperties": true }
+      },
+      "additionalProperties": false
+    }
+  }
+}

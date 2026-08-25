@@ -1,0 +1,117 @@
+"""Test-only reference normalizer for agent-eval-main's own fixtures.
+
+Not part of src/atf_eval. Two distinct shapes:
+
+  - agent-eval-main/golden/*.json is already canonical (matches
+    normalized_trajectory.schema.json exactly) -- straight field mapping.
+  - agent-eval-main/tests/fixtures/scenarios/*.json are pre-Adapter, raw-ish
+    observed traces (per METRICS.md §12's documented Adapter/fixture split):
+    they use `sequence_index`/`tool_name` instead of the canonical
+    `sequence`/`tool_id`, and inconsistently key their turns under `turns`
+    (a full-conversation array) or `turn` (a single-turn object). This module
+    normalizes either shape into the same NormalizedTurn list atf_eval's
+    metric functions operate on, so agent-eval-main's own fixtures can be
+    used as an end-to-end conformance check.
+"""
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from atf_eval.normalized import NormalizedNode, NormalizedTurn, Outcome, StateChange, ToolCall
+
+
+def _state_changes(raw: list[dict]) -> list[StateChange]:
+    return [StateChange(key=c["key"], old=c.get("old"), new=c.get("new")) for c in raw]
+
+
+def _canonical_tool_calls(raw: list[dict]) -> list[ToolCall]:
+    return [
+        ToolCall(
+            tool_id=tc["tool_id"],
+            arguments=tc.get("input", {}),
+            sequence=tc.get("sequence"),
+            status=tc.get("status", "unknown"),
+        )
+        for tc in raw
+    ]
+
+
+def _raw_fixture_tool_calls(raw: list[dict]) -> list[ToolCall]:
+    return [
+        ToolCall(
+            tool_id=tc["tool_name"],
+            arguments=tc.get("input", {}),
+            sequence=tc.get("sequence_index"),
+            status="success",
+        )
+        for tc in raw
+    ]
+
+
+def load_golden_turns(path: Path) -> list[NormalizedTurn]:
+    """agent-eval-main/golden/*.json -> NormalizedTurn list. Already
+    canonical; the trace-level `outcome` is attached to the last turn since
+    atf_eval's metric functions read outcome from NormalizedTurn.outcome,
+    not from a separate trace-level field."""
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    turns = []
+    for t in doc["turns"]:
+        nodes = [
+            NormalizedNode(
+                node_id=n["node_id"],
+                sequence=n.get("sequence"),
+                output=n.get("output", {}),
+                state_changes=_state_changes(n.get("state_changes", [])),
+                tool_calls=_canonical_tool_calls(n.get("tool_calls", [])),
+            )
+            for n in t.get("nodes", [])
+        ]
+        # TIS operates on the turn-level flat tool_calls list, not node-level
+        # (tools.py: "no adapter currently attaches tool calls to a node") --
+        # mirror that here so TIS has something to compare.
+        flat_tool_calls = [tc for n in nodes for tc in n.tool_calls]
+        turns.append(
+            NormalizedTurn(
+                conversation_id=doc["trace_id"],
+                turn_id=t["turn_id"],
+                nodes=nodes,
+                tool_calls=flat_tool_calls,
+                response=t.get("output", {}).get("agent"),
+            )
+        )
+
+    raw_outcome = doc.get("outcome")
+    if raw_outcome is not None and turns:
+        turns[-1].outcome = Outcome(id=raw_outcome["id"], attributes=raw_outcome.get("attributes", {}))
+    return turns
+
+
+def _normalize_raw_turn(raw_turn: dict) -> NormalizedTurn:
+    nodes = [
+        NormalizedNode(
+            node_id=n["node_id"],
+            sequence=n.get("sequence_index"),
+            state_changes=_state_changes(n.get("state_changes", [])),
+            tool_calls=_raw_fixture_tool_calls(n.get("tool_calls", [])),
+        )
+        for n in raw_turn.get("nodes", [])
+    ]
+    flat_tool_calls = [tc for n in nodes for tc in n.tool_calls]
+    return NormalizedTurn(
+        conversation_id="_",
+        turn_id=raw_turn["turn_id"],
+        nodes=nodes,
+        tool_calls=flat_tool_calls,
+        response=raw_turn.get("conversation", {}).get("agent"),
+    )
+
+
+def load_fixture_turns(path: Path) -> list[NormalizedTurn]:
+    """agent-eval-main/tests/fixtures/scenarios/*.json -> NormalizedTurn
+    list. Handles both the full-conversation `"turns": [...]` shape and the
+    single-turn `"turn": {...}` shape these fixtures inconsistently use."""
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    if "turns" in doc:
+        return [_normalize_raw_turn(t) for t in doc["turns"]]
+    return [_normalize_raw_turn(doc["turn"])]
