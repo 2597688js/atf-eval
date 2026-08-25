@@ -9,6 +9,19 @@ golden dataset. See `METRICS.md` for the frozen scoring specification this packa
 implements (supersedes `ATF_Metric_Definition_Evaluation_Specification.md`, the
 original draft spec).
 
+## Quickstart
+
+```bash
+pip install git+https://github.com/2597688js/atf-eval.git
+mkdir my-atf-project && cd my-atf-project
+atf-eval init
+atf-eval run --dataset golden_dataset.jsonl --adapter adapter:MyAgentAdapter --no-routing-judge
+```
+
+`atf-eval init` generates a starter adapter + a matching golden dataset that runs with
+`ATF score: 1.000` immediately — confirms the framework works before you touch anything.
+Then edit `adapter.py` and `golden_dataset.jsonl` to point at your real agent.
+
 **For step-by-step setup and run instructions (install, Ollama, API keys, every example),
 see `GETTING_STARTED.md`.** This README is the API/conceptual reference: the adapter
 contract, golden dataset schema, metric group definitions, and the Python API for Policy

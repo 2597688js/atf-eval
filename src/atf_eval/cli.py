@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import sys
+from pathlib import Path
 
 import anthropic
 
@@ -12,6 +13,7 @@ from atf_eval.dataset import group_by_conversation, load_dataset
 from atf_eval.loader import load_adapter
 from atf_eval.report import aggregate, render_results_table, write_reports
 from atf_eval.runner import run_evaluation
+from atf_eval.scaffold import write_scaffold
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -47,6 +49,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "report", help="Print the per-conversation results table from a saved report.json"
     )
     report_parser.add_argument("path", help="Path to a report_<timestamp>.json written by `atf-eval run`")
+
+    init_parser = subparsers.add_parser(
+        "init", help="Generate a starter adapter + matching golden dataset (fastest way to get going)"
+    )
+    init_parser.add_argument(
+        "directory", nargs="?", default=".", help="Where to write the starter files (default: current directory)"
+    )
+    init_parser.add_argument("--force", action="store_true", help="Overwrite existing files")
 
     return parser
 
@@ -128,6 +138,27 @@ def cmd_report(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_init(args: argparse.Namespace) -> int:
+    output_dir = Path(args.directory)
+    try:
+        written = write_scaffold(output_dir, force=args.force)
+    except FileExistsError as e:
+        print(f"[error] {e}", file=sys.stderr)
+        return 1
+
+    print("Generated:")
+    for path in written:
+        print(f"  {path}")
+    cd_line = "" if str(output_dir) == "." else f"  cd {output_dir}\n"
+    print(
+        f"\nTry it right now:\n{cd_line}"
+        "  atf-eval run --dataset golden_dataset.jsonl --adapter adapter:MyAgentAdapter --no-routing-judge\n"
+        "\nThen open adapter.py and golden_dataset.jsonl and follow the TODOs / README.md "
+        "to wire up your real agent."
+    )
+    return 0
+
+
 def main() -> None:
     parser = _build_parser()
     args = parser.parse_args()
@@ -135,6 +166,8 @@ def main() -> None:
         sys.exit(cmd_run(args))
     if args.command == "report":
         sys.exit(cmd_report(args))
+    if args.command == "init":
+        sys.exit(cmd_init(args))
     parser.print_help()
     sys.exit(1)
 

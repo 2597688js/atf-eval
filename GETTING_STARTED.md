@@ -286,6 +286,12 @@ atf-eval run
 atf-eval report PATH            print the per-conversation results table from a saved report.json
                                  (same table `run` prints automatically -- use this to re-view a
                                  past run without re-executing it)
+
+atf-eval init [DIRECTORY]       generate a starter adapter.py + matching golden_dataset.jsonl +
+                                 README.md (default: current directory) -- runs with ATF score
+                                 1.000 out of the box, so `atf-eval run` works on the first try;
+                                 then edit both files to point at your real agent
+  --force                       overwrite existing files (refuses by default)
 ```
 
 `integrations/collection_agent/convert_golden_dataset.py`:
