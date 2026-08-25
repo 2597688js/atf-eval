@@ -391,3 +391,70 @@ read it as `atf_eval/...` now.
   8.eval_fw/                                            sibling project -- unrelated framework (rag_eval);
                                                           atf_eval used to live inside this repo, now split out
 ```
+
+## 6. 2026-08-25/26 -- agent-eval-main alignment, standalone GitHub repo, CLI additions, venv cleanup
+
+**Schema/contract alignment against `agent-eval-main`** (a separate, spec-only sibling repo
+-- frozen METRICS.md, a strict JSON Schema, one golden scenario, 3 deviation fixtures, zero
+code). Audit found the metric formulas/weights already matched exactly; the real gap was
+field naming and structure. Hard-renamed `src/atf_eval/normalized.py` + `dataset.py` to the
+canonical vocabulary (`tool_id` not `tool_name`, `sequence` not `sequence_index`, `old`/`new`
+not `old_value`/`new_value`, `id` not `outcome_id`, integer `turn_id` not `"turn_0001"`
+strings), added `to_canonical_document()` for schema export, added `availability.py`
+(non-invasive diagnostic signal) and `metric_result.py` (uniform per-metric result shape),
+extended `report.py`'s JSON additively. Updated both integrations' adapters/converters to
+match; regenerated all generated datasets. Verified behavior-preserving end-to-end: the live
+`collection_agent` run reproduced the exact same ATF score (0.394) before and after the
+rename, and `discount_planning_agent` reproduced its exact reference score (1.000).
+
+**Test suite rebuilt from scratch** (41 tests) after `METRICS.md`/`tests/`/`examples/` were
+intentionally deleted from the repo root as part of committing to `agent-eval-main` as the
+sole source of truth (no more duplicate spec copies -- `METRICS.md` at the root is now a
+2-line pointer stub, not a copy). Strongest check: `tests/fixtures/test_deviation_scenarios.py`
+runs agent-eval-main's own 3 deviation fixtures end-to-end through the real metric functions
+(via a test-only `reference_adapter.py` normalizer) -- caught a real, non-obvious formula
+behavior: the `wrong_tool_input` fixture doesn't actually move TIS, because the golden
+scenario's expected input for that tool is `{}` (nothing required -> nothing to get wrong,
+per the frozen formula), even though the fixture's name implies it should degrade the score.
+
+**`agent-eval-main` untracked from git** (`.gitignore`'d) at the user's explicit request --
+it's a separate, standalone repo consumed as a local sibling folder, never bundled here.
+Tests depending on it now `pytest.skip()` gracefully (not fail) when it's absent, verified
+both ways (36/41 passing without it, all 41 with it present).
+
+**Made the repo public and pip-installable**: initialized git (this project had no version
+control before), pushed to `https://github.com/2597688js/atf-eval` (user-provided, pre-empty
+remote). Renamed the package `atf-eval-poc` -> `atf-eval` in `pyproject.toml`, added
+`LICENSE` (MIT, user's explicit choice) + author/classifiers metadata. Built and validated a
+real sdist+wheel (`twine check` passed, installs cleanly in an isolated fresh venv) but
+**did not publish to PyPI** -- deferred at the user's request ("I will do that later").
+One real security incident during this: the user pasted a live PyPI API token directly into
+chat; refused to use it, told them to revoke it and use `~/.pypirc` instead (never typed
+into the conversation) for whenever they do publish.
+
+**Added `atf-eval report <path>`** (prints the per-conversation results table from a saved
+`report.json`, same table `run` now prints automatically) and **`atf-eval init [DIR]`** (one
+command generates `adapter.py` + `golden_dataset.jsonl` + `README.md` that run with
+`ATF score: 1.000` out of the box, so a brand-new user's first `atf-eval run` succeeds before
+they've written a line of their own code). Testing `init` through a genuine fresh
+`pip install git+https://...` (not just `--help`, which had been the only fresh-install check
+run before) caught a real bug: the installed console-script entry point doesn't put the
+current directory on `sys.path` the way `python -m atf_eval` does, so `--adapter
+adapter:MyAgentAdapter` failed with `ModuleNotFoundError` for any real pip-installed user.
+Fixed in `loader.py` (`_ensure_cwd_importable()`), re-verified against a second fresh install.
+
+**Cleaned up `integrations/collection_agent`** to only the files actually required (adapter,
+golden dataset, converter, runner, policy demo files) -- removed a superseded redirect stub
+(`HOW_TO_RUN_MANUALLY.md`) and an unused duplicate data file
+(`raw_golden_dataset_22_scripts.jsonl`, confirmed never read by any script here, byte-identical
+to data that already lives in the sibling `easy_agents` repo), plus 12 stale local run logs.
+`discount_planning_agent` was already minimal -- nothing to remove there.
+
+**venv hygiene**: removed PyPI publish artifacts (`dist/`, gitignored, never tracked) and
+uninstalled `build`/`twine` plus their 19 orphaned transitive dependencies from `atf_eval/.venv`
+once no longer needed. That pass also surfaced and fixed a stale, unrelated issue: an old
+`atf-eval-poc` editable-install registration (`.pth` + `.dist-info`) left over from before the
+package rename, still present in `.venv` even though `pyproject.toml` had said `atf-eval` for
+some time. Reinstalled `pip install -e ".[dev]"` fresh; verified the venv's package list now
+matches the canonical `atf-eval[dev]` dependency closure *exactly* (computed by diffing
+against a disposable reference venv, not guessed by hand).
