@@ -18,6 +18,13 @@ agent-eval-main/tests/fixtures/scenarios/wrong_tool_input.json
 Four rows are scored: those three fixtures, plus a `golden_baseline` sanity row (golden scored
 against itself) that the dashboard also generates.
 
+> **Looking for more depth on any one scenario?** This document covers all four scenarios at
+> roll-up depth. Two companion documents go much deeper on individual scenarios — full LCS
+> dynamic-programming tables, cell-by-cell derivations, and explicit turn-level vs.
+> conversation-level annotations for every metric:
+> - [`ATF_STEP_BY_STEP_WALKTHROUGH.md`](ATF_STEP_BY_STEP_WALKTHROUGH.md) — `correct_answer_wrong_trajectory` (full 8-turn conversation)
+> - [`ATF_STEP_BY_STEP_WALKTHROUGH_SINGLE_TURN.md`](ATF_STEP_BY_STEP_WALKTHROUGH_SINGLE_TURN.md) — `missing_tool_call` and `wrong_tool_input` (single-turn fixtures)
+
 ---
 
 ## 1. Formulas (verbatim from `METRICS.md` / `src/atf_eval`)
@@ -95,6 +102,8 @@ lines up 1:1, so:
 
 ### 3.1 `correct_answer_wrong_trajectory` — full 8-turn conversation
 
+*(Full DP-table-level derivation of this scenario: [`ATF_STEP_BY_STEP_WALKTHROUGH.md`](ATF_STEP_BY_STEP_WALKTHROUGH.md).)*
+
 **Deviation:** turn 4 skips `hardship_node`; the agent's reply is still an appropriate hardship
 response (`classify_intent` only, per the fixture's own `deviation` block).
 
@@ -171,6 +180,8 @@ length = 4 (prefix) + 8 (post-prefix) = **12**. No observed nodes are unmatched 
 
 ### 3.2 `missing_tool_call` — single turn (turn 5 only)
 
+*(Full derivation of this scenario: [`ATF_STEP_BY_STEP_WALKTHROUGH_SINGLE_TURN.md`](ATF_STEP_BY_STEP_WALKTHROUGH_SINGLE_TURN.md).)*
+
 **Deviation:** the fixture covers only turn 5; `instalment_eligibility` is never invoked, but
 the `installment_eligible` state change is still recorded.
 
@@ -206,6 +217,8 @@ whichever turn IDs the observed fixture actually covers — here just `{5}`).
   **ATF = 0.800**, `metric_coverage = 0.750`
 
 ### 3.3 `wrong_tool_input` — single turn (turn 5 only)
+
+*(Full derivation of this scenario: [`ATF_STEP_BY_STEP_WALKTHROUGH_SINGLE_TURN.md`](ATF_STEP_BY_STEP_WALKTHROUGH_SINGLE_TURN.md).)*
 
 **Deviation:** `instalment_eligibility` *is* called, but with `{policy_id: "POL_001",
 requested_amount: 5000}` instead of golden's expected `{}`.
