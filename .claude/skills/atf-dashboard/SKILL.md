@@ -62,13 +62,20 @@ prior ATF dashboard in this project).
 ## What's auto-generated vs. fixed
 
 - **Data-driven** (recomputed every run, scales to any number of golden
-  scenarios and fixtures): all scores, the at-a-glance table, the tab bar +
-  drill-down panels (grouped per golden), which metric groups auto-expand
-  (whichever didn't score a clean 1.000/N/A), and the caveat notes (detected
-  via `annotate_notes()` in the script: an observed run missing an `outcome`
-  field entirely -- vs. one that carries a real `outcome` that just doesn't
-  match golden's, which scores a genuine 0.000 rather than being flagged --,
-  RS being N/A everywhere because no fixture carries `routing`, and a
+  scenarios and fixtures): all scores, the at-a-glance table (group scores
+  only -- NTS/STS/TIS/RS/OS/ATF, no `metric_coverage` column; that number is
+  a coverage-of-the-formula diagnostic, easy to misread as a quality score
+  sitting next to ATF, so it's kept out of the glance view and shown only
+  inside each scenario's own drill-down panel, next to that scenario's ATF),
+  the tab bar + drill-down panels (grouped per golden -- this is also the
+  *only* place component-level sub-scores are shown; there's deliberately no
+  separate cross-scenario component table, to avoid saying the same numbers
+  twice), which metric groups auto-expand (whichever didn't score a clean
+  1.000/N/A), and the caveat notes (detected via `annotate_notes()` in the
+  script: an observed run missing an `outcome` field entirely -- vs. one
+  that carries a real `outcome` that just doesn't match golden's, which
+  scores a genuine 0.000 rather than being flagged --, RS being N/A
+  everywhere because no fixture carries `routing`, and a
   `wrong_tool_input`-style deviation where golden's own expected args are
   `{}` so nothing was there to get wrong).
 - **Fixed** (same for any dataset, since these describe the frozen spec, not a

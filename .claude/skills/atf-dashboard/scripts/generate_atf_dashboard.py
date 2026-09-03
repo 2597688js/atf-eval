@@ -449,44 +449,6 @@ def render_pill(score: float | None, flagged: bool = False) -> str:
     return f'<span class="pill {b}">{fmt(score)}{flag}</span>'
 
 
-def render_component_table(key: str, label: str, components: list, runs: list[dict]) -> str:
-    """One flat table for a single metric group: every scenario as a row,
-    every formula sub-component (plus overall) as a column -- the
-    cross-scenario view that complements the per-scenario drill-down tabs."""
-    header_cells = "".join(
-        f'<th class="num">{c_label}{" <span class=\"diag-th\">diag</span>" if diag else ""}</th>'
-        for c_label, c_key, diag in components
-    )
-    body_rows = []
-    for run in runs:
-        m = run["metrics"]
-        cells = "".join(f'<td class="num">{render_pill(m[c_key])}</td>' for _, c_key, _ in components)
-        flag_os = key == "os" and m.get("_os_flag", False)
-        body_rows.append(
-            f'<tr><td class="scenario-cell"><span class="name">{run["scenario"]}</span></td>'
-            f'{cells}<td class="num">{render_pill(m[f"{key}_overall"], flagged=flag_os)}</td></tr>'
-        )
-    return f"""
-    <div class="table-wrap component-table">
-      <table>
-        <thead>
-          <tr><th>Scenario</th>{header_cells}<th class="num">{label} overall</th></tr>
-        </thead>
-        <tbody>{"".join(body_rows)}</tbody>
-      </table>
-    </div>"""
-
-
-def render_component_tables(runs: list[dict]) -> str:
-    sections = []
-    for key, label, weight, components in GROUP_META:
-        sections.append(
-            f'<h3 class="component-table-heading">{label} <span class="weight">{weight} of ATF</span></h3>'
-            + render_component_table(key, label, components, runs)
-        )
-    return "".join(sections)
-
-
 def render_glance_row(run: dict, baseline: bool) -> str:
     m = run["metrics"]
     row_class = ' class="baseline"' if baseline else ""
@@ -500,7 +462,6 @@ def render_glance_row(run: dict, baseline: bool) -> str:
             <td class="num">{render_pill(m['rs_overall'])}</td>
             <td class="num">{render_pill(m['os_overall'], flagged=flag_os)}</td>
             <td class="num">{render_pill(m['atf'], flagged=flag_os)}</td>
-            <td class="num">{pct(m['metric_coverage'])}</td>
           </tr>"""
 
 
@@ -672,7 +633,6 @@ def render_dashboard(runs: list[dict], golden_summary: str, scenarios_dir: Path,
     ).rstrip(",") + " { outline: 2px solid var(--accent); outline-offset: 2px; }"
 
     panels = "".join(render_panel(i, run) for i, run in enumerate(runs, start=1))
-    component_tables = render_component_tables(runs)
 
     any_os_flag = any(r["metrics"].get("_os_flag") for r in runs)
     any_routing = any(r["metrics"]["rs_overall"] is not None for r in runs)
@@ -699,7 +659,6 @@ def render_dashboard(runs: list[dict], golden_summary: str, scenarios_dir: Path,
     html = html.replace("{{PANEL_ACTIVE_CSS}}", panel_css)
     html = html.replace("{{TAB_FOCUS_CSS}}", focus_css)
     html = html.replace("{{GLANCE_ROWS}}", glance_rows)
-    html = html.replace("{{COMPONENT_TABLES}}", component_tables)
     html = html.replace("{{PANELS}}", panels)
     html = html.replace("{{NOTES}}", notes_html)
     return html
