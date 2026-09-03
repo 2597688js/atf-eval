@@ -1,4 +1,4 @@
-<title>Hardship Installment Metrics</title>
+<title>ATF Trajectory Metrics</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,500;8..60,600;8..60,700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
 <style>
   :root {
@@ -258,6 +258,12 @@
   .component-row .c-fill.na { opacity: 0.35; }
   .component-row .c-score { text-align: right; font-family: "IBM Plex Mono", monospace; font-size: 0.78rem; }
 
+  .component-table-heading { font-size: 1rem; font-weight: 600; margin: 1.6rem 0 0.7rem; }
+  .component-table-heading:first-child { margin-top: 0; }
+  .component-table-heading .weight { font-family: "IBM Plex Mono", monospace; font-size: 0.72rem; font-weight: 500; color: var(--text-faint); margin-left: 0.5rem; }
+  .component-table { margin-bottom: 1.3rem; }
+  .diag-th { font-size: 0.6rem; color: var(--text-faint); text-transform: uppercase; letter-spacing: 0.04em; font-weight: 500; }
+
   .panel-note {
     margin-top: 1.1rem; font-size: 0.85rem; color: var(--text);
     background: var(--warning-soft); border: 1px solid var(--border); border-left: 3px solid var(--warning);
@@ -294,9 +300,9 @@
 
   <header class="masthead">
     <p class="eyebrow">ATF Trajectory Evaluation &middot; Interactive</p>
-    <h1>Hardship Installment Metrics</h1>
+    <h1>ATF Trajectory Metrics</h1>
     <p class="subtitle">
-      Agent Trajectory Fidelity dashboard: golden trajectory vs. observed agent runs.
+      Agent Trajectory Fidelity dashboard: golden trajectories vs. observed agent runs.
       Click a scenario below to drill into every component score.
     </p>
     <dl class="meta-row">
@@ -306,7 +312,7 @@
     </dl>
     <p class="align-strip">
       <strong>Spec-aligned</strong>
-      Every formula and weight below matches <code>agent-eval-main/METRICS.md</code>
+      Every formula and weight below matches <code>agent-eval/METRICS.md</code>
       (the frozen spec) &sect;2&ndash;&sect;7 exactly: NTS 40/30/30, STS 70/30, TIS 25/20/25/20/10, RS 70/30, OS 50/30/20, ATF 30/30/15/10/15.
     </p>
   </header>
@@ -411,6 +417,20 @@
 
   <section>
     <div class="section-head">
+      <h2>Component-level scores</h2>
+      <span class="count">every run &middot; every sub-component, side by side</span>
+    </div>
+    <p class="section-intro">
+      One table per metric group (NTS, STS, TIS, RS, OS): each column is a formula
+      sub-component from METRICS.md &sect;2&ndash;&sect;6, each row a scenario. Columns marked
+      <span class="diag-th">diag</span> are reported for context but aren't part of that
+      group's weighted formula.
+    </p>
+    {{COMPONENT_TABLES}}
+  </section>
+
+  <section>
+    <div class="section-head">
       <h2>Component-level drill-down</h2>
       <span class="count">click a scenario, then a metric row, to expand</span>
     </div>
@@ -438,7 +458,7 @@
   </section>
 
   <footer>
-    <span>Formulas verified line-for-line against agent-eval-main/METRICS.md &sect;2&ndash;&sect;7 (frozen spec).</span>
+    <span>Formulas verified line-for-line against agent-eval/METRICS.md &sect;2&ndash;&sect;7 (frozen spec).</span>
     <span class="weights">ATF weights: nts .30 &middot; sts .30 &middot; tis .15 &middot; rs .10 &middot; os .15</span>
   </footer>
 

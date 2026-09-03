@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
 """Generate ATF metrics (group-level + full component-level) and an
-interactive HTML dashboard for agent-eval-main's golden dataset vs. its
+interactive HTML dashboard for agent-eval's golden dataset(s) vs. their
 observed-scenario fixtures.
+
+Supports multiple golden scenarios at once (e.g. S001, S002, ...): every
+*.json file in --golden-dir is its own golden trajectory, and each observed
+fixture is routed to the golden it belongs to via its own `golden_scenario`
+field (falling back to the sole golden when there's only one).
 
 Self-contained: normalizes the two raw fixture shapes itself (mirrors
 tests/fixtures/reference_adapter.py so this skill has no dependency on the
@@ -13,7 +18,7 @@ native <details>).
 Usage (from the atf_eval repo root, with .venv active):
     python .claude/skills/atf-dashboard/scripts/generate_atf_dashboard.py
     python .claude/skills/atf-dashboard/scripts/generate_atf_dashboard.py \\
-        --golden path/to/golden.json --scenarios path/to/scenarios_dir \\
+        --golden-dir path/to/golden_dir --scenarios path/to/scenarios_dir \\
         --output-dir results/
 """
 from __future__ import annotations
@@ -22,6 +27,7 @@ import argparse
 import csv
 import datetime
 import json
+import sys
 from pathlib import Path
 
 from atf_eval.aggregate import DEFAULT_WEIGHTS, atf_score
@@ -147,8 +153,17 @@ def _normalize_raw_turn(raw_turn: dict) -> NormalizedTurn:
 def load_fixture_turns(path: Path) -> list[NormalizedTurn]:
     doc = json.loads(path.read_text(encoding="utf-8"))
     if "turns" in doc:
-        return [_normalize_raw_turn(t) for t in doc["turns"]]
-    return [_normalize_raw_turn(doc["turn"])]
+        turns = [_normalize_raw_turn(t) for t in doc["turns"]]
+    else:
+        turns = [_normalize_raw_turn(doc["turn"])]
+    # Some observed fixtures (e.g. a disconnect/drift scenario) carry a
+    # trace-level `outcome`, same convention as the golden files -- attach it
+    # to the last turn so OS can actually see it instead of reading N/A/0.0
+    # for a fixture gap that isn't really there.
+    raw_outcome = doc.get("outcome")
+    if raw_outcome is not None and turns:
+        turns[-1].outcome = Outcome(id=raw_outcome["id"], attributes=raw_outcome.get("attributes", {}))
+    return turns
 
 
 # ---------------------------------------------------------------------------
@@ -234,38 +249,81 @@ def turns_compared_label(expected: list[NormalizedTurn], golden_turns: list[Norm
 # ---------------------------------------------------------------------------
 
 
-def discover_runs(golden_turns: list[NormalizedTurn], scenarios_dir: Path) -> list[dict]:
-    """Golden-vs-itself baseline, plus every *.json fixture found in
-    scenarios_dir. The matching golden slice for each fixture is whatever
-    golden turn_ids the fixture itself covers -- this generalizes correctly
-    whether a fixture is a full conversation or a single turn."""
-    runs = [
-        {
-            "scenario": "golden_baseline",
-            "deviation_type": "none",
-            "description": "Golden trajectory scored against itself (sanity baseline).",
-            "expected": golden_turns,
-            "observed": golden_turns,
-            "turns_compared": turns_compared_label(golden_turns, golden_turns),
-            "doc_meta": {},
-        }
-    ]
+def discover_goldens(golden_dir: Path) -> list[dict]:
+    """Every *.json golden file in golden_dir. Each is keyed by its own
+    metadata.scenario_id (falling back to trace_id) -- that's the same key
+    an observed fixture names in its `golden_scenario` field, so fixtures can
+    be routed to the correct golden regardless of how many golden scenarios
+    are in play."""
+    goldens = []
+    for path in sorted(golden_dir.glob("*.json")):
+        doc = json.loads(path.read_text(encoding="utf-8"))
+        key = doc.get("metadata", {}).get("scenario_id") or doc["trace_id"]
+        goldens.append({"key": key, "path": path, "turns": load_golden_turns(path)})
+    return goldens
+
+
+def discover_runs(goldens: list[dict], scenarios_dir: Path) -> list[dict]:
+    """A golden-vs-itself baseline per golden scenario, plus every *.json
+    fixture found in scenarios_dir, each routed to its matching golden via
+    its own `golden_scenario` field (falling back to the sole golden when
+    there's only one, for older fixtures that don't set the field). The
+    matching golden slice for each fixture is whatever golden turn_ids the
+    fixture itself covers -- this generalizes correctly whether a fixture is
+    a full conversation or a single turn. Runs are grouped by golden -- each
+    golden's baseline immediately followed by its own matching fixtures --
+    so the dashboard's tab order reads as one block per golden scenario."""
+    golden_by_key = {g["key"]: g for g in goldens}
+    fixture_docs = []  # (path, doc_meta, matched_golden_or_None), matched once per fixture
     for path in sorted(scenarios_dir.glob("*.json")):
         doc_meta = json.loads(path.read_text(encoding="utf-8"))
-        observed = load_fixture_turns(path)
-        observed_ids = {t.turn_id for t in observed}
-        expected = [t for t in golden_turns if t.turn_id in observed_ids] or golden_turns
+        golden_key = doc_meta.get("golden_scenario")
+        if golden_key and golden_key in golden_by_key:
+            g = golden_by_key[golden_key]
+        elif len(goldens) == 1:
+            g = goldens[0]
+        else:
+            print(
+                f"[WARN] {path.name}: golden_scenario={golden_key!r} matches no golden "
+                f"file in {scenarios_dir} -- skipping", file=sys.stderr,
+            )
+            g = None
+        fixture_docs.append((path, doc_meta, g))
+
+    runs = []
+    for g in goldens:
+        short = g["key"].split("_", 1)[0] if "_" in g["key"] else g["key"]
         runs.append(
             {
-                "scenario": path.stem,
-                "deviation_type": doc_meta.get("deviation_type", "unknown"),
-                "description": doc_meta.get("deviation", {}).get("description", ""),
-                "expected": expected,
-                "observed": observed,
-                "turns_compared": turns_compared_label(expected, golden_turns),
-                "doc_meta": doc_meta,
+                "scenario": f"{short}_golden_baseline",
+                "deviation_type": "none",
+                "description": f"Golden trajectory ({g['key']}) scored against itself (sanity baseline).",
+                "expected": g["turns"],
+                "observed": g["turns"],
+                "turns_compared": turns_compared_label(g["turns"], g["turns"]),
+                "doc_meta": {},
+                "golden_key": g["key"],
             }
         )
+        for path, doc_meta, matched in fixture_docs:
+            if matched is not g:
+                continue
+            golden_turns = g["turns"]
+            observed = load_fixture_turns(path)
+            observed_ids = {t.turn_id for t in observed}
+            expected = [t for t in golden_turns if t.turn_id in observed_ids] or golden_turns
+            runs.append(
+                {
+                    "scenario": path.stem,
+                    "deviation_type": doc_meta.get("deviation_type", "unknown"),
+                    "description": doc_meta.get("deviation", {}).get("description", ""),
+                    "expected": expected,
+                    "observed": observed,
+                    "turns_compared": turns_compared_label(expected, golden_turns),
+                    "doc_meta": doc_meta,
+                    "golden_key": g["key"],
+                }
+            )
     return runs
 
 
@@ -294,12 +352,12 @@ def pct(width: float | None) -> str:
 # ---------------------------------------------------------------------------
 
 GROUP_FIELDS = [
-    "scenario", "deviation_type", "description", "turns_compared",
+    "golden", "scenario", "deviation_type", "description", "turns_compared",
     "nts", "sts", "tis", "rs", "os", "atf", "metric_coverage",
 ]
 
 COMPONENT_FIELDS = [
-    "scenario", "deviation_type", "description", "turns_compared",
+    "golden", "scenario", "deviation_type", "description", "turns_compared",
     "nts_coverage", "nts_precision", "nts_recall_diag", "nts_order", "nts_overall",
     "sts_transition_accuracy", "sts_order", "sts_key_accuracy_diag",
     "sts_old_value_accuracy_diag", "sts_new_value_accuracy_diag", "sts_overall",
@@ -311,8 +369,8 @@ COMPONENT_FIELDS = [
 
 
 def write_csvs(runs: list[dict], output_dir: Path, timestamp: str) -> tuple[Path, Path]:
-    group_path = output_dir / f"agent_eval_main_metrics_{timestamp}.csv"
-    component_path = output_dir / f"agent_eval_main_metrics_components_{timestamp}.csv"
+    group_path = output_dir / f"atf_metrics_{timestamp}.csv"
+    component_path = output_dir / f"atf_metrics_components_{timestamp}.csv"
 
     with group_path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=GROUP_FIELDS)
@@ -320,6 +378,7 @@ def write_csvs(runs: list[dict], output_dir: Path, timestamp: str) -> tuple[Path
         for run in runs:
             m = run["metrics"]
             writer.writerow({
+                "golden": run.get("golden_key", ""),
                 "scenario": run["scenario"], "deviation_type": run["deviation_type"],
                 "description": run["description"], "turns_compared": run["turns_compared"],
                 "nts": m["nts_overall"], "sts": m["sts_overall"], "tis": m["tis_overall"],
@@ -334,6 +393,7 @@ def write_csvs(runs: list[dict], output_dir: Path, timestamp: str) -> tuple[Path
             m = run["metrics"]
             row = {k: v for k, v in m.items() if not k.startswith("_")}
             row.update({
+                "golden": run.get("golden_key", ""),
                 "scenario": run["scenario"], "deviation_type": run["deviation_type"],
                 "description": run["description"], "turns_compared": run["turns_compared"],
             })
@@ -387,6 +447,44 @@ def render_pill(score: float | None, flagged: bool = False) -> str:
     b = band(score)
     flag = "&nbsp;&#9888;" if flagged else ""
     return f'<span class="pill {b}">{fmt(score)}{flag}</span>'
+
+
+def render_component_table(key: str, label: str, components: list, runs: list[dict]) -> str:
+    """One flat table for a single metric group: every scenario as a row,
+    every formula sub-component (plus overall) as a column -- the
+    cross-scenario view that complements the per-scenario drill-down tabs."""
+    header_cells = "".join(
+        f'<th class="num">{c_label}{" <span class=\"diag-th\">diag</span>" if diag else ""}</th>'
+        for c_label, c_key, diag in components
+    )
+    body_rows = []
+    for run in runs:
+        m = run["metrics"]
+        cells = "".join(f'<td class="num">{render_pill(m[c_key])}</td>' for _, c_key, _ in components)
+        flag_os = key == "os" and m.get("_os_flag", False)
+        body_rows.append(
+            f'<tr><td class="scenario-cell"><span class="name">{run["scenario"]}</span></td>'
+            f'{cells}<td class="num">{render_pill(m[f"{key}_overall"], flagged=flag_os)}</td></tr>'
+        )
+    return f"""
+    <div class="table-wrap component-table">
+      <table>
+        <thead>
+          <tr><th>Scenario</th>{header_cells}<th class="num">{label} overall</th></tr>
+        </thead>
+        <tbody>{"".join(body_rows)}</tbody>
+      </table>
+    </div>"""
+
+
+def render_component_tables(runs: list[dict]) -> str:
+    sections = []
+    for key, label, weight, components in GROUP_META:
+        sections.append(
+            f'<h3 class="component-table-heading">{label} <span class="weight">{weight} of ATF</span></h3>'
+            + render_component_table(key, label, components, runs)
+        )
+    return "".join(sections)
 
 
 def render_glance_row(run: dict, baseline: bool) -> str:
@@ -452,6 +550,9 @@ def primary_metric_for(deviation_type: str) -> str | None:
         "partial_incorrect_outcome": "OS",
         "correct_trajectory_wrong_outcome": "OS",
         "trajectory_drift": "NTS / RS",
+        # Not a literal METRICS.md §11 row -- closest official bucket is
+        # "Trajectory drift across turns", same NTS / RS mapping.
+        "trajectory_drift_customer_disconnection": "NTS / RS",
     }
     return taxonomy.get(deviation_type)
 
@@ -508,7 +609,7 @@ def render_panel(idx: int, run: dict) -> str:
       </section>"""
 
 
-def annotate_notes(runs: list[dict], golden_turns: list[NormalizedTurn]) -> None:
+def annotate_notes(runs: list[dict]) -> None:
     """Attach auto-detected caveats so the dashboard explains itself rather
     than silently showing a misleading number."""
     for run in runs:
@@ -548,9 +649,9 @@ def annotate_notes(runs: list[dict], golden_turns: list[NormalizedTurn]) -> None
             )
 
 
-def render_dashboard(runs: list[dict], golden_path: Path, scenarios_dir: Path, run_date: str) -> str:
+def render_dashboard(runs: list[dict], golden_summary: str, scenarios_dir: Path, run_date: str) -> str:
     glance_rows = "".join(
-        render_glance_row(run, baseline=(run["scenario"] == "golden_baseline")) for run in runs
+        render_glance_row(run, baseline=(run["deviation_type"] == "none")) for run in runs
     )
     tab_inputs = "".join(
         f'\n      <input type="radio" name="stabs" id="tab-{i}" class="tab-input"{" checked" if i == 1 else ""}>'
@@ -571,6 +672,7 @@ def render_dashboard(runs: list[dict], golden_path: Path, scenarios_dir: Path, r
     ).rstrip(",") + " { outline: 2px solid var(--accent); outline-offset: 2px; }"
 
     panels = "".join(render_panel(i, run) for i, run in enumerate(runs, start=1))
+    component_tables = render_component_tables(runs)
 
     any_os_flag = any(r["metrics"].get("_os_flag") for r in runs)
     any_routing = any(r["metrics"]["rs_overall"] is not None for r in runs)
@@ -588,7 +690,7 @@ def render_dashboard(runs: list[dict], golden_path: Path, scenarios_dir: Path, r
     notes_html = "".join(notes_parts) or "<p>No scoring caveats detected for this run set.</p>"
 
     html = PAGE_SHELL
-    html = html.replace("{{GOLDEN_PATH}}", str(golden_path))
+    html = html.replace("{{GOLDEN_PATH}}", golden_summary)
     html = html.replace("{{SCENARIOS_PATH}}", str(scenarios_dir))
     html = html.replace("{{RUN_DATE}}", run_date)
     html = html.replace("{{TAB_INPUTS}}", tab_inputs)
@@ -597,6 +699,7 @@ def render_dashboard(runs: list[dict], golden_path: Path, scenarios_dir: Path, r
     html = html.replace("{{PANEL_ACTIVE_CSS}}", panel_css)
     html = html.replace("{{TAB_FOCUS_CSS}}", focus_css)
     html = html.replace("{{GLANCE_ROWS}}", glance_rows)
+    html = html.replace("{{COMPONENT_TABLES}}", component_tables)
     html = html.replace("{{PANELS}}", panels)
     html = html.replace("{{NOTES}}", notes_html)
     return html
@@ -610,32 +713,36 @@ def render_dashboard(runs: list[dict], golden_path: Path, scenarios_dir: Path, r
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--golden",
-        default=str(REPO_ROOT / "agent-eval-main" / "golden" / "motor_insurance_hardship_installment.json"),
+        "--golden-dir",
+        default=str(REPO_ROOT / "agent-eval" / "golden"),
+        help="Directory of golden *.json files (one per golden scenario, e.g. S001/S002).",
     )
     parser.add_argument(
         "--scenarios",
-        default=str(REPO_ROOT / "agent-eval-main" / "tests" / "fixtures" / "scenarios"),
+        default=str(REPO_ROOT / "agent-eval" / "tests" / "fixtures" / "scenarios"),
     )
     parser.add_argument("--output-dir", default=str(REPO_ROOT / "results"))
     args = parser.parse_args()
 
-    golden_path = Path(args.golden)
+    golden_dir = Path(args.golden_dir)
     scenarios_dir = Path(args.scenarios)
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    golden_turns = load_golden_turns(golden_path)
-    runs = discover_runs(golden_turns, scenarios_dir)
+    goldens = discover_goldens(golden_dir)
+    if not goldens:
+        raise SystemExit(f"No golden *.json files found in {golden_dir}")
+    runs = discover_runs(goldens, scenarios_dir)
     for run in runs:
         run["metrics"] = score_components(run["expected"], run["observed"])
-    annotate_notes(runs, golden_turns)
+    annotate_notes(runs)
 
     timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     run_date = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
 
     group_csv, component_csv = write_csvs(runs, output_dir, timestamp)
-    dashboard_html = render_dashboard(runs, golden_path, scenarios_dir, run_date)
+    golden_summary = ", ".join(f"{g['key']} ({g['path'].name})" for g in goldens)
+    dashboard_html = render_dashboard(runs, golden_summary, scenarios_dir, run_date)
     dashboard_path = output_dir / f"atf_dashboard_{timestamp}.html"
     dashboard_path.write_text(dashboard_html, encoding="utf-8")
 
@@ -645,7 +752,7 @@ def main() -> None:
     print(f"  {dashboard_path}")
     for run in runs:
         m = run["metrics"]
-        print(f"{run['scenario']}: ATF={fmt(m['atf'])} NTS={fmt(m['nts_overall'])} "
+        print(f"[{run.get('golden_key', '')}] {run['scenario']}: ATF={fmt(m['atf'])} NTS={fmt(m['nts_overall'])} "
               f"STS={fmt(m['sts_overall'])} TIS={fmt(m['tis_overall'])} "
               f"RS={fmt(m['rs_overall'])} OS={fmt(m['os_overall'])}")
 
