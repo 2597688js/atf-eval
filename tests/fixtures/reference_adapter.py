@@ -113,5 +113,12 @@ def load_fixture_turns(path: Path) -> list[NormalizedTurn]:
     single-turn `"turn": {...}` shape these fixtures inconsistently use."""
     doc = json.loads(path.read_text(encoding="utf-8"))
     if "turns" in doc:
-        return [_normalize_raw_turn(t) for t in doc["turns"]]
-    return [_normalize_raw_turn(doc["turn"])]
+        turns = [_normalize_raw_turn(t) for t in doc["turns"]]
+    else:
+        turns = [_normalize_raw_turn(doc["turn"])]
+    # Some observed fixtures carry a trace-level `outcome`, same convention
+    # as golden -- attach it to the last turn so OS can see it.
+    raw_outcome = doc.get("outcome")
+    if raw_outcome is not None and turns:
+        turns[-1].outcome = Outcome(id=raw_outcome["id"], attributes=raw_outcome.get("attributes", {}))
+    return turns
