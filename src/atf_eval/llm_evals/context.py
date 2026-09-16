@@ -2,16 +2,21 @@
 
 Built from the same `NormalizedTurn` lists the deterministic metrics use
 (expected == golden reference, observed == the trace under evaluation), so
-the LLM layer needs no separate trace format. Group 5 additionally needs
-audio/timing evidence, which the canonical trajectory does not currently
-carry -- `has_audio` / `has_timing` stay False and those metrics return N/A.
+the LLM layer needs no separate trace format. Group 5 splits into a timing
+tier (Interruption Count/Recovery/Understanding, Turn-taking Quality,
+Perceived Response Latency -- judgeable from structured turn timestamps and
+interruption events, no audio needed) and an acoustic tier (Speech
+Naturalness, Prosody/Tone, ... -- needs real audio, which the canonical
+trajectory does not carry). `has_timing` reflects whether any observed turn
+actually carries a `TurnTiming`; `has_audio` stays False until a real
+audio-evidence pipeline exists.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any
 
-from atf_eval.normalized import NormalizedTurn
+from atf_eval.normalized import NormalizedTurn, TurnTiming
 
 
 @dataclass
@@ -36,6 +41,7 @@ class TurnContext:
     reference_state_changes: list[tuple[str, Any, Any]] = field(default_factory=list)
     observed_routing: tuple[str | None, str | None] | None = None
     reference_routing: tuple[str | None, str | None] | None = None
+    observed_timing: TurnTiming | None = None
 
     def asks_question(self) -> bool:
         return "?" in (self.agent_response or "")
@@ -63,6 +69,10 @@ class TurnContext:
                 "observed state changes: "
                 + "; ".join(f"{k}: {o!r}->{n!r}" for k, o, n in self.observed_state_changes)
             )
+        if self.observed_timing:
+            timing_line = _format_timing(self.observed_timing)
+            if timing_line:
+                lines.append(timing_line)
         return "\n".join(lines) if lines else "(no additional trajectory evidence)"
 
 
@@ -104,6 +114,25 @@ def _format_tool_evidence(t: ToolEvidence) -> str:
     reference text."""
     base = f"{t.tool_id}({t.arguments})"
     return f"{base} -> {t.result!r}" if t.result is not None else base
+
+
+def _format_timing(t: TurnTiming) -> str:
+    """Structured timing evidence, in plain English -- what Group 5's
+    timing-tier metrics (Interruption Count/Recovery/Understanding,
+    Turn-taking Quality, Perceived Response Latency) read. No audio, just
+    the timestamps/latency/interruption events a real voice adapter logs."""
+    parts = []
+    if t.customer_end_ms is not None and t.agent_start_ms is not None:
+        parts.append(
+            f"customer finished speaking at {t.customer_end_ms}ms, "
+            f"agent started responding at {t.agent_start_ms}ms"
+        )
+    if t.response_latency_ms is not None:
+        parts.append(f"response latency ~{t.response_latency_ms}ms")
+    for i in t.interruptions:
+        note = f" ({i.note})" if i.note else ""
+        parts.append(f"interruption: {i.by} interrupted at {i.at_ms}ms{note}")
+    return "timing: " + "; ".join(parts) if parts else ""
 
 
 def _tools(turn: NormalizedTurn) -> list[ToolEvidence]:
@@ -153,6 +182,7 @@ def build_context(
             reference_state_changes=_state(ref) if ref else [],
             observed_routing=_routing(obs),
             reference_routing=_routing(ref) if ref else None,
+            observed_timing=obs.timing,
         )
         turn_ctxs.append(tc)
         prior.append((customer, agent))
@@ -162,6 +192,7 @@ def build_context(
         turns=turn_ctxs,
         reference_outcome=_last_outcome_attrs(expected_turns),
         observed_outcome=_last_outcome_attrs(observed_turns),
+        has_timing=any(t.timing is not None for t in observed_turns),
     )
 
 

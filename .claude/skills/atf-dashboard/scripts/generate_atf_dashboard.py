@@ -63,12 +63,14 @@ from atf_eval.metrics.tools import (
     tool_precision,
 )
 from atf_eval.normalized import (
+    InterruptionEvent,
     NormalizedNode,
     NormalizedTurn,
     Outcome,
     Routing,
     StateChange,
     ToolCall,
+    TurnTiming,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
@@ -88,6 +90,23 @@ def _routing(raw_turn: dict) -> Routing | None:
     if not raw:
         return None
     return Routing(path=raw.get("path"), target=raw.get("target"))
+
+
+def _timing(raw_turn: dict) -> TurnTiming | None:
+    raw = raw_turn.get("timing")
+    if not raw:
+        return None
+    return TurnTiming(
+        customer_start_ms=raw.get("customer_start_ms"),
+        customer_end_ms=raw.get("customer_end_ms"),
+        agent_start_ms=raw.get("agent_start_ms"),
+        agent_end_ms=raw.get("agent_end_ms"),
+        response_latency_ms=raw.get("response_latency_ms"),
+        interruptions=[
+            InterruptionEvent(by=i["by"], at_ms=i["at_ms"], note=i.get("note"))
+            for i in raw.get("interruptions", [])
+        ],
+    )
 
 
 def _canonical_tool_calls(raw: list[dict]) -> list[ToolCall]:
@@ -140,6 +159,7 @@ def load_golden_turns(path: Path) -> list[NormalizedTurn]:
                 routing=_routing(t),
                 response=t.get("output", {}).get("agent"),
                 customer_input=t.get("input", {}).get("customer"),
+                timing=_timing(t),
             )
         )
     raw_outcome = doc.get("outcome")
@@ -167,6 +187,7 @@ def _normalize_raw_turn(raw_turn: dict) -> NormalizedTurn:
         routing=_routing(raw_turn),
         response=raw_turn.get("conversation", {}).get("agent"),
         customer_input=raw_turn.get("conversation", {}).get("customer"),
+        timing=_timing(raw_turn),
     )
 
 

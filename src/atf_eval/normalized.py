@@ -52,6 +52,27 @@ class Outcome:
 
 
 @dataclass
+class InterruptionEvent:
+    by: str  # "customer" | "agent"
+    at_ms: int
+    note: str | None = None
+
+
+@dataclass
+class TurnTiming:
+    """Structured timing evidence for a turn -- Group 5's timing-tier LLM
+    metrics (Interruption Count/Recovery/Understanding, Turn-taking Quality,
+    Perceived Response Latency) read this. No audio required; this is what
+    a real voice/IVR adapter already logs."""
+    customer_start_ms: int | None = None
+    customer_end_ms: int | None = None
+    agent_start_ms: int | None = None
+    agent_end_ms: int | None = None
+    response_latency_ms: int | None = None
+    interruptions: list[InterruptionEvent] = field(default_factory=list)
+
+
+@dataclass
 class NormalizedTurn:
     conversation_id: str
     turn_id: int
@@ -62,3 +83,4 @@ class NormalizedTurn:
     outcome: Outcome | None = None
     response: str | None = None  # observed agent's reply text, used by the RS LLM judge
     customer_input: str | None = None  # customer utterance for this turn, used by the LLM eval metrics
+    timing: TurnTiming | None = None  # structured timing evidence, used by Group 5's timing-tier metrics
