@@ -43,7 +43,7 @@ your-project/
 
 These exact names (`golden/`, `tests/fixtures/scenarios/`) are `atf-eval dashboard`'s
 defaults, so using them means the command in step 5 needs zero flags. Different names
-work too — just pass `--golden-dir` / `--scenarios`.
+or locations work too — see step 5 for the flags to point at them directly.
 
 ## 4. (Optional) API key
 
@@ -73,6 +73,19 @@ real subcommand of the installed package, not a script you need to locate inside
 `atf-eval/` checkout. The first run makes real API calls; every judge response is cached
 on disk (`.llm_cache/`), so a re-run against unchanged data/prompts is free and
 near-instant.
+
+Your golden/tests aren't at `golden/` and `tests/fixtures/scenarios/`, or you want output
+somewhere other than `results/`? Point directly at them instead:
+
+```bash
+atf-eval dashboard \
+  --golden-dir path/to/your/golden \
+  --scenarios path/to/your/tests \
+  --output-dir path/to/output
+```
+
+All three flags are independent and optional — set only the ones that differ from the
+defaults. Paths can be relative (to wherever you run the command from) or absolute.
 
 ## 6. Open the result
 
