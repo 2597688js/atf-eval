@@ -1,25 +1,28 @@
-#!/usr/bin/env python3
 """Generate ATF metrics (group-level + full component-level) and an
-interactive HTML dashboard for agent-eval's golden dataset(s) vs. their
-observed-scenario fixtures.
+interactive HTML dashboard for a golden dataset vs. its observed-scenario
+fixtures -- deterministic NTS/STS/TIS/RS/OS/ATF plus the Group 1-5
+LLM/multimodal metrics (METRICS.md Part B), all in one page.
 
-Supports multiple golden scenarios at once (e.g. S001, S002, ...): every
-*.json file in --golden-dir is its own golden trajectory, and each observed
-fixture is routed to the golden it belongs to via its own `golden_scenario`
-field (falling back to the sole golden when there's only one).
+Supports multiple golden scenarios at once: every *.json file in
+--golden-dir is its own golden trajectory, and each observed fixture is
+routed to the golden it belongs to via its own `golden_scenario` field
+(falling back to the sole golden when there's only one).
 
-Self-contained: normalizes the two raw fixture shapes itself (mirrors
-tests/fixtures/reference_adapter.py so this skill has no dependency on the
-test tree), computes every NTS/STS/TIS/RS/OS sub-component via atf_eval's
-real metric functions (never re-derives a formula), and renders CSVs +
-a single-file HTML dashboard with no external JS (radio-driven CSS tabs +
+Self-contained: normalizes the golden/fixture JSON shapes itself (no
+dependency on any adapter), computes every NTS/STS/TIS/RS/OS sub-component
+via atf_eval's real metric functions and every LLM metric via
+atf_eval.llm_evals (never re-derives a formula), and renders CSVs + a
+single-file HTML dashboard with no external JS (radio-driven CSS tabs +
 native <details>).
 
-Usage (from the atf_eval repo root, with .venv active):
-    python .claude/skills/atf-dashboard/scripts/generate_atf_dashboard.py
-    python .claude/skills/atf-dashboard/scripts/generate_atf_dashboard.py \\
-        --golden-dir path/to/golden_dir --scenarios path/to/scenarios_dir \\
+Usage (as the installed CLI, from your project root -- defaults assume
+`golden/` and `tests/fixtures/scenarios/` relative to the current directory):
+    atf-eval dashboard
+    atf-eval dashboard --golden-dir path/to/golden --scenarios path/to/fixtures \\
         --output-dir results/
+
+Or as a library:
+    from atf_eval.dashboard.generate import add_arguments, run
 """
 from __future__ import annotations
 
@@ -73,11 +76,11 @@ from atf_eval.normalized import (
     TurnTiming,
 )
 
-REPO_ROOT = Path(__file__).resolve().parents[4]
-
 # ---------------------------------------------------------------------------
-# Fixture normalization (mirrors tests/fixtures/reference_adapter.py -- kept
-# self-contained here so this skill has no dependency on the test tree).
+# Fixture normalization -- kept self-contained here (no dependency on any
+# particular adapter) so this works against any project's golden/fixture
+# JSON, as long as it matches schema/normalized_trajectory.schema.json
+# (golden) or the same shape plus a `golden_scenario` field (fixtures).
 # ---------------------------------------------------------------------------
 
 
@@ -538,9 +541,8 @@ def _llm_coverage_str(run: dict) -> str:
     """Plain (non-pill) coverage count, not a quality score -- how many of the
     19 Group 1-4 metrics actually scored vs. N/A for this run. Group 5 (13
     voice metrics) is excluded from the denominator: it is expected to be
-    N/A on every text-only fixture (no audio/timing evidence in the schema),
-    so folding it in would make a perfectly correct run look like it's
-    missing coverage."""
+    N/A without audio/timing evidence, so folding it in would make a
+    perfectly correct run look like it's missing coverage."""
     report = run.get("llm")
     if report is None:
         return '<span style="color:var(--text-faint)">off</span>'
@@ -597,8 +599,8 @@ def render_group_meter(key: str, label: str, weight: str, components: list, m: d
 
 
 def primary_metric_for(deviation_type: str) -> str | None:
-    """METRICS.md S11's deviation-taxonomy -> primary-metric mapping, for the
-    deviation_type values this project's own fixtures actually use."""
+    """METRICS.md §11's deviation-taxonomy -> primary-metric mapping, for the
+    deviation_type values a fixture's `deviation_type` field commonly uses."""
     taxonomy = {
         "correct_answer_wrong_trajectory": "NTS",
         "wrong_node_executed": "NTS",
@@ -935,9 +937,10 @@ def render_llm_section(run: dict) -> str:
         total_specs += len(specs)
         na_note = ""
         if g == 5 and scored_ct == 0:
-            na_note = ('<p class="llm-group-note">All Group 5 metrics are N/A for this run: the '
-                       'canonical trajectory carries no audio or timing evidence (METRICS.md &sect;18). '
-                       'The evaluators are implemented and will score the moment an audio-bearing trace is supplied.</p>')
+            na_note = ('<p class="llm-group-note">All Group 5 metrics are N/A for this run: '
+                       'no audio or timing evidence in this trajectory (METRICS.md &sect;18). '
+                       'The evaluators are implemented and will score the moment audio/timing '
+                       'evidence is supplied.</p>')
         groups_html += f"""
           <details class="llm-group"{' open' if g != 5 else ''}>
             <summary><span class="lg-label">{_LLM_GROUP_TITLES[g]}</span><span class="lg-count">{scored_ct}/{len(specs)} scored</span></summary>
@@ -955,22 +958,23 @@ def render_llm_section(run: dict) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Main
+# CLI wiring -- add_arguments()/run() are shared by the `atf-eval dashboard`
+# subcommand (cli.py) and this module's own standalone `main()`.
 # ---------------------------------------------------------------------------
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser()
+def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--golden-dir",
-        default=str(REPO_ROOT / "agent-eval" / "golden"),
-        help="Directory of golden *.json files (one per golden scenario, e.g. S001/S002).",
+        default="golden",
+        help="Directory of golden *.json files, one per golden scenario (default: ./golden).",
     )
     parser.add_argument(
         "--scenarios",
-        default=str(REPO_ROOT / "agent-eval" / "tests" / "fixtures" / "scenarios"),
+        default=str(Path("tests") / "fixtures" / "scenarios"),
+        help="Directory of observed-fixture *.json files (default: ./tests/fixtures/scenarios).",
     )
-    parser.add_argument("--output-dir", default=str(REPO_ROOT / "results"))
+    parser.add_argument("--output-dir", default="results", help="Default: ./results")
     parser.add_argument("--judge-model", default="claude-opus-5",
                         help="Anthropic model for RS's routing judge and the Group 1-5 LLM metrics.")
     parser.add_argument("--effort", choices=["low", "medium", "high", "xhigh", "max"], default="low",
@@ -979,8 +983,9 @@ def main() -> None:
                         help="Skip RS's LLM routing judge -- RS reports N/A instead.")
     parser.add_argument("--no-llm-evals", action="store_true",
                         help="Skip the Group 1-5 LLM/multimodal metrics (and the LLM section of each panel).")
-    args = parser.parse_args()
 
+
+def run(args: argparse.Namespace) -> None:
     golden_dir = Path(args.golden_dir)
     scenarios_dir = Path(args.scenarios)
     output_dir = Path(args.output_dir)
@@ -993,18 +998,28 @@ def main() -> None:
         from atf_eval.llm_evals import get_judge_client
         judge_client = get_judge_client()
         if judge_client is None:
-            print("[info] no ANTHROPIC_API_KEY (checked env + repo .env) -- RS and Group 1-5 "
+            print("[info] no ANTHROPIC_API_KEY (checked env + a repo-root .env) -- RS and Group 1-5 "
                   "LLM metrics will report N/A", file=sys.stderr)
 
     rs_client = None if args.no_routing_judge else judge_client
 
+    if not golden_dir.exists():
+        raise SystemExit(
+            f"Golden directory not found: {golden_dir}\n"
+            "Pass --golden-dir, or run from a directory that has a ./golden folder."
+        )
     goldens = discover_goldens(golden_dir)
     if not goldens:
         raise SystemExit(f"No golden *.json files found in {golden_dir}")
+    if not scenarios_dir.exists():
+        raise SystemExit(
+            f"Scenarios directory not found: {scenarios_dir}\n"
+            "Pass --scenarios, or run from a directory that has a ./tests/fixtures/scenarios folder."
+        )
     runs = discover_runs(goldens, scenarios_dir)
-    for run in runs:
-        run["metrics"] = score_components(
-            run["expected"], run["observed"], rs_client, args.judge_model, args.effort
+    for run_ in runs:
+        run_["metrics"] = score_components(
+            run_["expected"], run_["observed"], rs_client, args.judge_model, args.effort
         )
     annotate_notes(runs)
 
@@ -1035,17 +1050,26 @@ def main() -> None:
     if llm_csv is not None:
         print(f"  {llm_csv}")
 
-    for run in runs:
-        m = run["metrics"]
-        print(f"[{run.get('golden_key', '')}] {run['scenario']}: ATF={fmt(m['atf'])} NTS={fmt(m['nts_overall'])} "
+    for run_ in runs:
+        m = run_["metrics"]
+        print(f"[{run_.get('golden_key', '')}] {run_['scenario']}: ATF={fmt(m['atf'])} NTS={fmt(m['nts_overall'])} "
               f"STS={fmt(m['sts_overall'])} TIS={fmt(m['tis_overall'])} "
               f"RS={fmt(m['rs_overall'])} OS={fmt(m['os_overall'])}")
-        if "llm" in run:
-            report = run["llm"]
+        if "llm" in run_:
+            report = run_["llm"]
             avail = sum(1 for r in report.all_results() if r.status == "available")
             print(f"    LLM: {avail} metric-results scored, "
                   f"{sum(1 for r in report.overall_results.values() if r.status == 'available')}/"
                   f"{len(report.overall_results)} overall metrics")
+
+
+def main() -> None:
+    """Standalone entry point (`python -m atf_eval.dashboard.generate ...`).
+    The `atf-eval dashboard` CLI subcommand (cli.py) calls add_arguments()/
+    run() directly instead of going through this function."""
+    parser = argparse.ArgumentParser(description=__doc__)
+    add_arguments(parser)
+    run(parser.parse_args())
 
 
 if __name__ == "__main__":

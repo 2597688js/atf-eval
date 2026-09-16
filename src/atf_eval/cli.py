@@ -58,6 +58,15 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     init_parser.add_argument("--force", action="store_true", help="Overwrite existing files")
 
+    dashboard_parser = subparsers.add_parser(
+        "dashboard",
+        help="Score golden + observed-fixture JSON directories (deterministic + LLM Groups 1-5) "
+        "and produce an interactive HTML dashboard",
+    )
+    from atf_eval.dashboard.generate import add_arguments as add_dashboard_arguments
+
+    add_dashboard_arguments(dashboard_parser)
+
     return parser
 
 
@@ -159,6 +168,13 @@ def cmd_init(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_dashboard(args: argparse.Namespace) -> int:
+    from atf_eval.dashboard.generate import run as run_dashboard
+
+    run_dashboard(args)
+    return 0
+
+
 def main() -> None:
     parser = _build_parser()
     args = parser.parse_args()
@@ -168,6 +184,8 @@ def main() -> None:
         sys.exit(cmd_report(args))
     if args.command == "init":
         sys.exit(cmd_init(args))
+    if args.command == "dashboard":
+        sys.exit(cmd_dashboard(args))
     parser.print_help()
     sys.exit(1)
 
