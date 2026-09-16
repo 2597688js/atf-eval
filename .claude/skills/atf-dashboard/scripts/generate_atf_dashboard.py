@@ -95,6 +95,7 @@ def _canonical_tool_calls(raw: list[dict]) -> list[ToolCall]:
         ToolCall(
             tool_id=tc["tool_id"],
             arguments=tc.get("input", {}),
+            result=tc.get("output"),
             sequence=tc.get("sequence"),
             status=tc.get("status", "unknown"),
         )
@@ -107,6 +108,7 @@ def _raw_fixture_tool_calls(raw: list[dict]) -> list[ToolCall]:
         ToolCall(
             tool_id=tc["tool_name"],
             arguments=tc.get("input", {}),
+            result=tc.get("output"),
             sequence=tc.get("sequence_index"),
             status="success",
         )

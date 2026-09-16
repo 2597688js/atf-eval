@@ -122,6 +122,7 @@ def _overall_user(spec: MetricSpec, ctx: ConversationContext) -> str:
     obs = ctx.observed_outcome or {}
     return (
         f"<full_transcript>\n{ctx.transcript()}\n</full_transcript>\n\n"
+        f"<trajectory_evidence>\n{ctx.trajectory_evidence()}\n</trajectory_evidence>\n\n"
         f"<outcome_evidence>\n"
         f"reference (golden) outcome attributes: {ref or '(none)'}\n"
         f"observed outcome attributes: {obs or '(none)'}\n"

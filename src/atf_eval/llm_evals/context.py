@@ -18,6 +18,7 @@ from atf_eval.normalized import NormalizedTurn
 class ToolEvidence:
     tool_id: str
     arguments: dict[str, Any]
+    result: Any = None  # tool call output/return value, when the trace carries one
 
 
 @dataclass
@@ -50,12 +51,12 @@ class TurnContext:
         if self.reference_tools:
             lines.append(
                 "reference tools: "
-                + ", ".join(f"{t.tool_id}({t.arguments})" for t in self.reference_tools)
+                + ", ".join(_format_tool_evidence(t) for t in self.reference_tools)
             )
         if self.observed_tools:
             lines.append(
                 "observed tools: "
-                + ", ".join(f"{t.tool_id}({t.arguments})" for t in self.observed_tools)
+                + ", ".join(_format_tool_evidence(t) for t in self.observed_tools)
             )
         if self.observed_state_changes:
             lines.append(
@@ -81,9 +82,35 @@ class ConversationContext:
             out.append(f"[turn {t.turn_id}] agent: {t.agent_response}")
         return "\n".join(out)
 
+    def trajectory_evidence(self) -> str:
+        """Conversation-wide node/tool/state evidence, turn by turn -- the
+        overall-level judge prompt's counterpart to TurnContext.evidence_block().
+        Without this, an overall-level grounding metric (Faithfulness,
+        Groundedness, Citation/Evidence Accuracy, ...) would only see the raw
+        transcript + final outcome, missing the tool results that actually
+        ground (or contradict) a claim made mid-conversation."""
+        lines: list[str] = []
+        for t in self.turns:
+            block = t.evidence_block()
+            if block and block != "(no additional trajectory evidence)":
+                lines.append(f"[turn {t.turn_id}]\n{block}")
+        return "\n".join(lines) if lines else "(no additional trajectory evidence available)"
+
+
+def _format_tool_evidence(t: ToolEvidence) -> str:
+    """Include the tool's return value when the trace carries one -- this is
+    what lets Faithfulness/Groundedness/Citation-Accuracy check a claim
+    against what was actually retrieved, not just against the golden
+    reference text."""
+    base = f"{t.tool_id}({t.arguments})"
+    return f"{base} -> {t.result!r}" if t.result is not None else base
+
 
 def _tools(turn: NormalizedTurn) -> list[ToolEvidence]:
-    return [ToolEvidence(tool_id=tc.tool_id, arguments=dict(tc.arguments)) for tc in turn.tool_calls]
+    return [
+        ToolEvidence(tool_id=tc.tool_id, arguments=dict(tc.arguments), result=tc.result)
+        for tc in turn.tool_calls
+    ]
 
 
 def _state(turn: NormalizedTurn) -> list[tuple[str, Any, Any]]:
