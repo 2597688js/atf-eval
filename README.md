@@ -22,10 +22,10 @@ atf-eval run --dataset golden_dataset.jsonl --adapter adapter:MyAgentAdapter --n
 `ATF score: 1.000` immediately — confirms the framework works before you touch anything.
 Then edit `adapter.py` and `golden_dataset.jsonl` to point at your real agent.
 
-**For step-by-step setup and run instructions (install, Ollama, API keys, every example),
-see `GETTING_STARTED.md`.** This README is the API/conceptual reference: the adapter
-contract, golden dataset schema, metric group definitions, and the Python API for Policy
-Compliance and the scorecard.
+**For step-by-step setup and run instructions (install, API keys, the `atf-eval
+dashboard` command), see `HOW_TO_USE.md`.** This README is the API/conceptual
+reference: the adapter contract, golden dataset schema, metric group definitions, and
+the Python API for Policy Compliance and the scorecard.
 
 Four of five metric groups (NTS, STS, TIS, OS) are fully deterministic — closed-form
 formulas, no LLM calls. **RS is the one exception**: it's an LLM-based semantic judge
@@ -225,9 +225,8 @@ Not invoked
 
 ## CLI flags and worked examples
 
-Full flag reference and copy-pasteable commands for every bundled example (mock agent,
-`discount_planning_agent`, `collection_agent`) live in `GETTING_STARTED.md` — not
-duplicated here to avoid the two docs drifting out of sync.
+Full flag reference and copy-pasteable commands (`atf-eval run`, `atf-eval dashboard`)
+live in `HOW_TO_USE.md` — not duplicated here to avoid the two docs drifting out of sync.
 
 ## Design notes
 
