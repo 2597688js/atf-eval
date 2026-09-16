@@ -265,6 +265,41 @@
   }
   .panel-note strong { color: var(--warning); }
 
+  /* ---------- embedded LLM / multimodal section (Groups 1-5), inside each panel ---------- */
+  .llm-section { margin-top: 1.6rem; padding-top: 1.4rem; border-top: 1px solid var(--border); }
+  .llm-section-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 0.6rem; margin-bottom: 0.9rem; }
+  .llm-section-head h4 { font-size: 0.95rem; font-weight: 600; font-family: "IBM Plex Sans", sans-serif; }
+  .llm-section-head .count { font-family: "IBM Plex Mono", monospace; font-size: 0.72rem; color: var(--text-faint); margin-left: 0.5rem; font-weight: 400; }
+  .llm-coverage { font-family: "IBM Plex Mono", monospace; font-size: 0.72rem; color: var(--text-faint); }
+
+  .llm-group { border: 1px solid var(--border); border-radius: 9px; margin-bottom: 0.6rem; background: var(--surface-sunken); }
+  .llm-group:last-child { margin-bottom: 0; }
+  .llm-group > summary {
+    list-style: none; cursor: pointer; padding: 0.65rem 0.9rem; display: flex;
+    justify-content: space-between; align-items: center; gap: 0.6rem;
+  }
+  .llm-group > summary::-webkit-details-marker { display: none; }
+  .lg-label { font-family: "IBM Plex Mono", monospace; font-weight: 600; font-size: 0.8rem; }
+  .lg-count { font-family: "IBM Plex Mono", monospace; font-size: 0.72rem; color: var(--text-faint); white-space: nowrap; }
+  .llm-group-note { margin: 0 0.9rem 0.8rem; font-size: 0.8rem; color: var(--text-muted); }
+
+  .llm-metric { border-top: 1px solid var(--border); }
+  .llm-metric > summary {
+    list-style: none; cursor: pointer; padding: 0.55rem 0.9rem; display: flex; align-items: center; gap: 0.6rem;
+  }
+  .llm-metric > summary::-webkit-details-marker { display: none; }
+  .lm-name { flex: 1; font-size: 0.85rem; font-weight: 500; }
+  .lm-level { color: var(--text-faint); font-size: 0.65rem; margin-left: 0.45rem; text-transform: uppercase; letter-spacing: 0.04em; }
+  .lm-status { font-size: 0.68rem; color: var(--na); text-transform: uppercase; letter-spacing: 0.03em; }
+  .lm-reason { margin: 0.1rem 0.9rem 0.7rem; font-size: 0.82rem; color: var(--text-muted); }
+  .lm-turns { margin: 0 0.9rem 0.8rem; display: flex; flex-direction: column; gap: 0.3rem; }
+  .lm-turn { display: grid; grid-template-columns: 4rem 4rem 1fr; gap: 0.5rem; align-items: start; font-size: 0.78rem; }
+  .lm-turn-id { color: var(--text-faint); font-family: "IBM Plex Mono", monospace; }
+  .lm-turn-score { font-family: "IBM Plex Mono", monospace; }
+  .lm-turn-score.good { color: var(--good); } .lm-turn-score.warning { color: var(--warning); }
+  .lm-turn-score.serious { color: var(--serious); } .lm-turn-score.critical { color: var(--critical); } .lm-turn-score.na { color: var(--na); }
+  .lm-turn-reason { color: var(--text-muted); }
+
   /* ---------- notes / footer ---------- */
   .callout {
     border: 1px solid var(--border); border-left: 3px solid var(--warning); background: var(--warning-soft);
@@ -297,7 +332,9 @@
     <h1>ATF Trajectory Metrics</h1>
     <p class="subtitle">
       Agent Trajectory Fidelity dashboard: golden trajectories vs. observed agent runs.
-      Click a scenario below to drill into every component score.
+      Covers both the deterministic trajectory metrics (NTS/STS/TIS/RS/OS/ATF) and the
+      LLM/multimodal metrics (Groups 1-5) in one page. Click a scenario below to drill
+      into every score.
     </p>
     <dl class="meta-row">
       <div><dt>Golden dataset</dt><dd>{{GOLDEN_PATH}}</dd></div>
@@ -308,6 +345,8 @@
       <strong>Spec-aligned</strong>
       Every formula and weight below matches <code>agent-eval/METRICS.md</code>
       (the frozen spec) &sect;2&ndash;&sect;7 exactly: NTS 40/30/30, STS 70/30, TIS 25/20/25/20/10, RS 70/30, OS 50/30/20, ATF 30/30/15/10/15.
+      The LLM/multimodal metrics (&sect;13&ndash;&sect;24) call <code>atf_eval.llm_evals</code>'s
+      real evaluator code, never a re-derived rubric.
     </p>
   </header>
 
@@ -379,6 +418,44 @@
 
   <section>
     <div class="section-head">
+      <h2>LLM &amp; multimodal evaluation</h2>
+      <span class="count">METRICS.md Part B &middot; Groups 1-5</span>
+    </div>
+    <p class="section-intro">
+      A second, independent set of 32 metrics scored by an LLM judge instead of a formula:
+      response quality, grounding, safety/policy, conversation quality, and voice/multimodal.
+      Each keeps its <strong>native</strong> scoring (1&ndash;5, Pass/Fail, -2..+2, count+severity,
+      category+confidence &mdash; METRICS.md &sect;19: no cross-metric normalization), so there is
+      no blended score here the way NTS/STS/TIS/RS/OS blend into ATF. Full results for every run
+      are in the <strong>LLM &amp; Multimodal Evaluation</strong> section of that run's panel below,
+      grouped exactly as METRICS.md groups them.
+    </p>
+    <div class="glossary-grid">
+      <div class="glossary-card">
+        <span class="glossary-badge">G1</span><h3>Response Quality</h3>
+        <p class="plain">Relevance, Correctness, Completeness, Helpfulness, Question Quality.</p>
+      </div>
+      <div class="glossary-card">
+        <span class="glossary-badge">G2</span><h3>Grounding &amp; Knowledge</h3>
+        <p class="plain">Faithfulness, Groundedness, Hallucination, Citation/Evidence Accuracy.</p>
+      </div>
+      <div class="glossary-card">
+        <span class="glossary-badge">G3</span><h3>Safety, Policy &amp; Compliance</h3>
+        <p class="plain">Policy Compliance, AI Safety, Refusal/Escalation Quality.</p>
+      </div>
+      <div class="glossary-card">
+        <span class="glossary-badge">G4</span><h3>Conversation Quality</h3>
+        <p class="plain">Coherence, Empathy, Intent Understanding, Repetition, Effort, Friction, Sentiment.</p>
+      </div>
+      <div class="glossary-card">
+        <span class="glossary-badge">G5</span><h3>Voice / Multimodal</h3>
+        <p class="plain">13 metrics needing audio/timing evidence (interruptions, prosody, latency, disconnection, &hellip;). N/A on a text-only trace &mdash; never a false score.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="section-head">
       <h2>At a glance</h2>
       <span class="count">every run &middot; group scores</span>
     </div>
@@ -389,6 +466,7 @@
             <th>Scenario</th>
             <th class="num">NTS</th><th class="num">STS</th><th class="num">TIS</th>
             <th class="num">RS</th><th class="num">OS</th><th class="num">ATF</th>
+            <th class="num">LLM scored</th>
           </tr>
         </thead>
         <tbody>{{GLANCE_ROWS}}
@@ -438,7 +516,7 @@
   </section>
 
   <footer>
-    <span>Formulas verified line-for-line against agent-eval/METRICS.md &sect;2&ndash;&sect;7 (frozen spec).</span>
+    <span>Formulas verified line-for-line against agent-eval/METRICS.md &sect;2&ndash;&sect;7 (deterministic) and &sect;13&ndash;&sect;24 (LLM/multimodal, frozen spec). LLM rationale supports auditability but is not itself authoritative (&sect;23).</span>
     <span class="weights">ATF weights: nts .30 &middot; sts .30 &middot; tis .15 &middot; rs .10 &middot; os .15</span>
   </footer>
 

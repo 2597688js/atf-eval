@@ -511,6 +511,26 @@ def render_pill(score: float | None, flagged: bool = False) -> str:
     return f'<span class="pill {b}">{fmt(score)}{flag}</span>'
 
 
+def _llm_coverage_str(run: dict) -> str:
+    """Plain (non-pill) coverage count, not a quality score -- how many of the
+    19 Group 1-4 metrics actually scored vs. N/A for this run. Group 5 (13
+    voice metrics) is excluded from the denominator: it is expected to be
+    N/A on every text-only fixture (no audio/timing evidence in the schema),
+    so folding it in would make a perfectly correct run look like it's
+    missing coverage."""
+    report = run.get("llm")
+    if report is None:
+        return '<span style="color:var(--text-faint)">off</span>'
+    from atf_eval.llm_evals import BY_ID
+
+    g14_ids = [mid for mid, spec in BY_ID.items() if spec.group != 5]
+    scored = sum(
+        1 for mid in g14_ids
+        if (r := report.overall_results.get(mid)) is not None and r.status == "available"
+    )
+    return f'<span style="color:var(--text-faint)">{scored}/{len(g14_ids)}</span>'
+
+
 def render_glance_row(run: dict, baseline: bool) -> str:
     m = run["metrics"]
     row_class = ' class="baseline"' if baseline else ""
@@ -524,6 +544,7 @@ def render_glance_row(run: dict, baseline: bool) -> str:
             <td class="num">{render_pill(m['rs_overall'])}</td>
             <td class="num">{render_pill(m['os_overall'], flagged=flag_os)}</td>
             <td class="num">{render_pill(m['atf'], flagged=flag_os)}</td>
+            <td class="num">{_llm_coverage_str(run)}</td>
           </tr>"""
 
 
@@ -610,6 +631,7 @@ def render_panel(idx: int, run: dict) -> str:
 
     note = m.get("_note", "")
     note_html = f'\n          <p class="panel-note">{note}</p>' if note else ""
+    llm_html = render_llm_section(run)
 
     desc = run["description"] or "Golden trajectory scored against itself."
     return f"""
@@ -628,6 +650,7 @@ def render_panel(idx: int, run: dict) -> str:
             </div>
           </div>
           {meters}{note_html}
+          {llm_html}
         </div>
       </section>"""
 
@@ -836,32 +859,43 @@ def write_llm_csv(runs: list[dict], output_dir: Path, timestamp: str) -> Path | 
 def render_llm_metric_row(overall, per_turn: list) -> str:
     native = llm_native_str(overall.scoring_type, overall.score)
     band = _llm_band(overall.normalized, overall.status)
-    status_tag = "" if overall.status == "available" else f'<span class="l-status">{overall.status.replace("_", " ")}</span>'
+    status_tag = "" if overall.status == "available" else f'<span class="lm-status">{overall.status.replace("_", " ")}</span>'
     turn_rows = ""
     shown_turns = [t for t in per_turn if t.turn_id is not None]
     if shown_turns:
         items = "".join(
-            f'<div class="l-turn"><span class="l-turn-id">turn {t.turn_id}</span>'
-            f'<span class="l-turn-score {_llm_band(t.normalized, t.status)}">{llm_native_str(t.scoring_type, t.score)}</span>'
-            f'<span class="l-turn-reason">{(t.reason or "")[:400]}</span></div>'
+            f'<div class="lm-turn"><span class="lm-turn-id">turn {t.turn_id}</span>'
+            f'<span class="lm-turn-score {_llm_band(t.normalized, t.status)}">{llm_native_str(t.scoring_type, t.score)}</span>'
+            f'<span class="lm-turn-reason">{(t.reason or "")[:400]}</span></div>'
             for t in shown_turns
         )
-        turn_rows = f'<div class="l-turns">{items}</div>'
+        turn_rows = f'<div class="lm-turns">{items}</div>'
     return f"""
-            <details class="l-metric">
+            <details class="llm-metric">
               <summary>
-                <span class="l-name">{overall.metric_name}<span class="l-level">{overall.level}</span></span>
-                <span class="l-score {band}">{native}</span>
+                <span class="lm-name">{overall.metric_name}<span class="lm-level">{overall.level}</span></span>
+                <span class="pill {band}">{native}</span>
                 {status_tag}
               </summary>
-              <p class="l-reason">{(overall.reason or "")[:600]}</p>
+              <p class="lm-reason">{(overall.reason or "")[:600]}</p>
               {turn_rows}
             </details>"""
 
 
-def render_llm_panel(idx: int, run: dict) -> str:
-    report = run["llm"]
+def _llm_all_specs():
+    from atf_eval.llm_evals import ALL_METRICS
+    return ALL_METRICS
+
+
+def render_llm_section(run: dict) -> str:
+    """The 'LLM & Multimodal Evaluation' block embedded inside a run's own
+    panel (single dashboard -- no separate tab system for the LLM track)."""
+    report = run.get("llm")
+    if report is None:
+        return ""
+
     groups_html = ""
+    total_scored = total_specs = 0
     for g in (1, 2, 3, 4, 5):
         specs = [s for s in _llm_all_specs() if s.group == g]
         rows = ""
@@ -874,127 +908,27 @@ def render_llm_panel(idx: int, run: dict) -> str:
             rows += render_llm_metric_row(overall, per_turn)
             if overall.status == "available":
                 scored_ct += 1
+        total_scored += scored_ct
+        total_specs += len(specs)
         na_note = ""
         if g == 5 and scored_ct == 0:
-            na_note = ('<p class="l-group-note">All Group 5 metrics are N/A for these fixtures: the '
+            na_note = ('<p class="llm-group-note">All Group 5 metrics are N/A for this run: the '
                        'canonical trajectory carries no audio or timing evidence (METRICS.md &sect;18). '
                        'The evaluators are implemented and will score the moment an audio-bearing trace is supplied.</p>')
         groups_html += f"""
-          <details class="l-group"{' open' if g != 5 else ''}>
-            <summary><span class="l-group-title">{_LLM_GROUP_TITLES[g]}</span><span class="l-group-count">{scored_ct}/{len(specs)} scored</span></summary>
+          <details class="llm-group"{' open' if g != 5 else ''}>
+            <summary><span class="lg-label">{_LLM_GROUP_TITLES[g]}</span><span class="lg-count">{scored_ct}/{len(specs)} scored</span></summary>
             {na_note}{rows}
           </details>"""
+
     return f"""
-      <section id="lpanel-{idx}" class="l-panel">
-        <div class="l-panel-card">
-          <h3>{run['scenario']}</h3>
-          <p class="desc">{run['description'] or 'Golden trajectory scored against itself.'}</p>
-          {groups_html}
-        </div>
-      </section>"""
-
-
-def _llm_all_specs():
-    from atf_eval.llm_evals import ALL_METRICS
-    return ALL_METRICS
-
-
-def render_llm_dashboard(runs: list[dict], golden_summary: str, run_date: str, model: str) -> str:
-    runs_with = [r for r in runs if "llm" in r]
-    tab_inputs = "".join(
-        f'\n      <input type="radio" name="ltabs" id="ltab-{i}" class="l-tab-input"{" checked" if i == 1 else ""}>'
-        for i in range(1, len(runs_with) + 1)
-    )
-    tab_labels = "".join(
-        f'\n        <label for="ltab-{i}" class="l-tab-label">{r["scenario"].replace("_", " ").title()}</label>'
-        for i, r in enumerate(runs_with, start=1)
-    )
-    tab_css = "\n  ".join(
-        f'#ltab-{i}:checked ~ .l-tab-bar label[for="ltab-{i}"],' for i in range(1, len(runs_with) + 1)
-    ).rstrip(",") + " { background: var(--accent); border-color: var(--accent); color: #fff; }"
-    panel_css = "\n  ".join(
-        f'#ltab-{i}:checked ~ #lpanel-{i},' for i in range(1, len(runs_with) + 1)
-    ).rstrip(",") + " { display: block; }"
-    panels = "".join(render_llm_panel(i, r) for i, r in enumerate(runs_with, start=1))
-
-    return _LLM_SHELL.replace("{{RUN_DATE}}", run_date).replace("{{MODEL}}", model).replace(
-        "{{GOLDEN}}", golden_summary
-    ).replace("{{TAB_INPUTS}}", tab_inputs).replace("{{TAB_LABELS}}", tab_labels).replace(
-        "{{TAB_ACTIVE_CSS}}", tab_css
-    ).replace("{{PANEL_ACTIVE_CSS}}", panel_css).replace("{{PANELS}}", panels)
-
-
-_LLM_SHELL = """<title>ATF LLM Metrics</title>
-<style>
-  :root {
-    --bg:#f5f7fa; --surface:#fff; --surface-2:#eef1f6; --text:#1b2430; --text-muted:#5b6672;
-    --border:#d9dee6; --accent:#3b5bdb;
-    --good:#2f9e44; --warning:#f08c00; --serious:#e8590c; --critical:#c92a2a; --na:#868e96;
-    --good-bg:#ebfbee; --warning-bg:#fff4e6; --serious-bg:#fff0e6; --critical-bg:#fff5f5; --na-bg:#f1f3f5;
-  }
-  :root:not([data-theme="light"]) { color-scheme: light dark; }
-  @media (prefers-color-scheme: dark) {
-    :root:not([data-theme="light"]) {
-      --bg:#12151a; --surface:#1b2027; --surface-2:#232a33; --text:#e6e9ee; --text-muted:#9aa4b0;
-      --border:#333c47; --accent:#5c7cfa;
-      --good-bg:#1e2a1f; --warning-bg:#2b2417; --serious-bg:#2c2017; --critical-bg:#2c1a1a; --na-bg:#232a33;
-    }
-  }
-  :root[data-theme="dark"] {
-    --bg:#12151a; --surface:#1b2027; --surface-2:#232a33; --text:#e6e9ee; --text-muted:#9aa4b0;
-    --border:#333c47; --accent:#5c7cfa;
-    --good-bg:#1e2a1f; --warning-bg:#2b2417; --serious-bg:#2c2017; --critical-bg:#2c1a1a; --na-bg:#232a33;
-  }
-  body { background:var(--bg); color:var(--text); font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; margin:0; }
-  .wrap { max-width:1100px; margin:0 auto; padding:2rem 1.25rem 4rem; }
-  h1 { font-size:1.5rem; margin:0 0 .3rem; }
-  h3 { font-size:1.1rem; margin:0 0 .2rem; }
-  .sub { color:var(--text-muted); font-size:.9rem; margin:0 0 1.5rem; }
-  .sub code { background:var(--surface-2); padding:.1rem .35rem; border-radius:4px; }
-  .l-tab-input { position:absolute; opacity:0; pointer-events:none; }
-  .l-tab-bar { display:flex; flex-wrap:wrap; gap:.4rem; margin-bottom:1.2rem; }
-  .l-tab-label { padding:.4rem .8rem; border:1px solid var(--border); border-radius:999px; background:var(--surface);
-    font-size:.82rem; cursor:pointer; user-select:none; }
-  {{TAB_ACTIVE_CSS}}
-  .l-panel { display:none; }
-  {{PANEL_ACTIVE_CSS}}
-  .l-panel-card { background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:1.4rem; }
-  .desc { color:var(--text-muted); margin:.2rem 0 1.1rem; }
-  .l-group { border:1px solid var(--border); border-radius:9px; margin:.6rem 0; background:var(--surface-2); }
-  .l-group > summary { cursor:pointer; padding:.7rem .9rem; display:flex; justify-content:space-between; align-items:center; font-weight:600; }
-  .l-group-count { font-weight:400; font-size:.8rem; color:var(--text-muted); }
-  .l-group-note { margin:.2rem .9rem .8rem; font-size:.84rem; color:var(--text-muted); }
-  .l-metric { border-top:1px solid var(--border); }
-  .l-metric > summary { cursor:pointer; padding:.55rem .9rem; display:flex; align-items:center; gap:.6rem; list-style:none; }
-  .l-metric > summary::-webkit-details-marker { display:none; }
-  .l-name { flex:1; font-weight:500; }
-  .l-level { color:var(--text-muted); font-size:.72rem; margin-left:.5rem; text-transform:uppercase; letter-spacing:.03em; }
-  .l-score { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:.8rem; padding:.15rem .5rem; border-radius:5px; border:1px solid var(--border); }
-  .l-score.good{background:var(--good-bg);color:var(--good)} .l-score.warning{background:var(--warning-bg);color:var(--warning)}
-  .l-score.serious{background:var(--serious-bg);color:var(--serious)} .l-score.critical{background:var(--critical-bg);color:var(--critical)}
-  .l-score.na{background:var(--na-bg);color:var(--na)}
-  .l-status { font-size:.72rem; color:var(--na); text-transform:uppercase; letter-spacing:.03em; }
-  .l-reason { margin:.1rem .9rem .7rem; font-size:.86rem; color:var(--text-muted); }
-  .l-turns { margin:0 .9rem .8rem; display:flex; flex-direction:column; gap:.3rem; }
-  .l-turn { display:grid; grid-template-columns:4rem 4rem 1fr; gap:.5rem; align-items:start; font-size:.82rem; }
-  .l-turn-id { color:var(--text-muted); }
-  .l-turn-score { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
-  .l-turn-score.good{color:var(--good)} .l-turn-score.warning{color:var(--warning)}
-  .l-turn-score.serious{color:var(--serious)} .l-turn-score.critical{color:var(--critical)} .l-turn-score.na{color:var(--na)}
-  .l-turn-reason { color:var(--text-muted); }
-  footer { margin-top:2rem; color:var(--text-muted); font-size:.8rem; border-top:1px solid var(--border); padding-top:1rem; }
-</style>
-<div class="wrap">
-  <h1>ATF - LLM &amp; Multimodal Metrics</h1>
-  <p class="sub">METRICS.md Part B, Groups 1-5 &middot; judge model <code>{{MODEL}}</code> &middot; {{RUN_DATE}}<br>
-  golden: <code>{{GOLDEN}}</code> &middot; native per-metric scoring preserved (METRICS.md &sect;19); the 0-1 colour band is a display aid only.</p>
-  {{TAB_INPUTS}}
-  <div class="l-tab-bar">{{TAB_LABELS}}</div>
-  {{PANELS}}
-  <footer>N/A means insufficient evidence for that metric, never a zero (METRICS.md &sect;21). Group 5 is N/A across these
-  fixtures because the traces carry no audio/timing evidence. LLM rationale supports auditability but is not itself authoritative (METRICS.md &sect;23).</footer>
-</div>
-"""
+          <div class="llm-section">
+            <div class="llm-section-head">
+              <h4>LLM &amp; Multimodal Evaluation<span class="count">METRICS.md Part B</span></h4>
+              <span class="llm-coverage">{total_scored}/{total_specs} metrics scored</span>
+            </div>
+            {groups_html}
+          </div>"""
 
 
 # ---------------------------------------------------------------------------
@@ -1021,7 +955,7 @@ def main() -> None:
     parser.add_argument("--no-routing-judge", action="store_true",
                         help="Skip RS's LLM routing judge -- RS reports N/A instead.")
     parser.add_argument("--no-llm-evals", action="store_true",
-                        help="Skip the Group 1-5 LLM/multimodal metrics and their dashboard.")
+                        help="Skip the Group 1-5 LLM/multimodal metrics (and the LLM section of each panel).")
     args = parser.parse_args()
 
     golden_dir = Path(args.golden_dir)
@@ -1062,6 +996,9 @@ def main() -> None:
 
     group_csv, component_csv = write_csvs(runs, output_dir, timestamp)
     golden_summary = ", ".join(f"{g['key']} ({g['path'].name})" for g in goldens)
+    # Single dashboard: render_dashboard()/render_panel() embed each run's LLM
+    # Groups 1-5 results (if any) directly into that run's own panel, so
+    # there is exactly one HTML file to publish, not a deterministic/LLM pair.
     dashboard_html = render_dashboard(runs, golden_summary, scenarios_dir, run_date)
     dashboard_path = output_dir / f"atf_dashboard_{timestamp}.html"
     dashboard_path.write_text(dashboard_html, encoding="utf-8")
@@ -1073,11 +1010,7 @@ def main() -> None:
 
     llm_csv = write_llm_csv(runs, output_dir, timestamp)
     if llm_csv is not None:
-        llm_dashboard_html = render_llm_dashboard(runs, golden_summary, run_date, args.judge_model)
-        llm_dashboard_path = output_dir / f"atf_llm_dashboard_{timestamp}.html"
-        llm_dashboard_path.write_text(llm_dashboard_html, encoding="utf-8")
         print(f"  {llm_csv}")
-        print(f"  {llm_dashboard_path}")
 
     for run in runs:
         m = run["metrics"]
