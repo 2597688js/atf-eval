@@ -61,3 +61,4 @@ class NormalizedTurn:
     routing: Routing | None = None
     outcome: Outcome | None = None
     response: str | None = None  # observed agent's reply text, used by the RS LLM judge
+    customer_input: str | None = None  # customer utterance for this turn, used by the LLM eval metrics

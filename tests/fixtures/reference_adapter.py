@@ -18,11 +18,28 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from atf_eval.normalized import NormalizedNode, NormalizedTurn, Outcome, StateChange, ToolCall
+from atf_eval.normalized import (
+    NormalizedNode,
+    NormalizedTurn,
+    Outcome,
+    Routing,
+    StateChange,
+    ToolCall,
+)
 
 
 def _state_changes(raw: list[dict]) -> list[StateChange]:
     return [StateChange(key=c["key"], old=c.get("old"), new=c.get("new")) for c in raw]
+
+
+def _routing(raw_turn: dict) -> Routing | None:
+    """Turn-level `routing` block (canonical golden and observed fixtures now
+    both carry it) -> Routing, so RS's judge and routing-order similarity
+    have an expected path/target to compare against."""
+    raw = raw_turn.get("routing")
+    if not raw:
+        return None
+    return Routing(path=raw.get("path"), target=raw.get("target"))
 
 
 def _canonical_tool_calls(raw: list[dict]) -> list[ToolCall]:
@@ -77,7 +94,9 @@ def load_golden_turns(path: Path) -> list[NormalizedTurn]:
                 turn_id=t["turn_id"],
                 nodes=nodes,
                 tool_calls=flat_tool_calls,
+                routing=_routing(t),
                 response=t.get("output", {}).get("agent"),
+                customer_input=t.get("input", {}).get("customer"),
             )
         )
 
@@ -103,7 +122,9 @@ def _normalize_raw_turn(raw_turn: dict) -> NormalizedTurn:
         turn_id=raw_turn["turn_id"],
         nodes=nodes,
         tool_calls=flat_tool_calls,
+        routing=_routing(raw_turn),
         response=raw_turn.get("conversation", {}).get("agent"),
+        customer_input=raw_turn.get("conversation", {}).get("customer"),
     )
 
 

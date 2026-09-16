@@ -104,6 +104,7 @@ class GoldenTurn(BaseModel):
         return NormalizedTurn(
             conversation_id=self.conversation_id,
             turn_id=self.turn_id,
+            customer_input=self.user_input or None,
             nodes=normalized_nodes,
             state_changes=flat_state_changes,
             tool_calls=[

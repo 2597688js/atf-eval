@@ -62,7 +62,14 @@ from atf_eval.metrics.tools import (
     tool_order_similarity,
     tool_precision,
 )
-from atf_eval.normalized import NormalizedNode, NormalizedTurn, Outcome, StateChange, ToolCall
+from atf_eval.normalized import (
+    NormalizedNode,
+    NormalizedTurn,
+    Outcome,
+    Routing,
+    StateChange,
+    ToolCall,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 
@@ -74,6 +81,13 @@ REPO_ROOT = Path(__file__).resolve().parents[4]
 
 def _state_changes(raw: list[dict]) -> list[StateChange]:
     return [StateChange(key=c["key"], old=c.get("old"), new=c.get("new")) for c in raw]
+
+
+def _routing(raw_turn: dict) -> Routing | None:
+    raw = raw_turn.get("routing")
+    if not raw:
+        return None
+    return Routing(path=raw.get("path"), target=raw.get("target"))
 
 
 def _canonical_tool_calls(raw: list[dict]) -> list[ToolCall]:
@@ -121,7 +135,9 @@ def load_golden_turns(path: Path) -> list[NormalizedTurn]:
                 turn_id=t["turn_id"],
                 nodes=nodes,
                 tool_calls=flat_tool_calls,
+                routing=_routing(t),
                 response=t.get("output", {}).get("agent"),
+                customer_input=t.get("input", {}).get("customer"),
             )
         )
     raw_outcome = doc.get("outcome")
@@ -146,7 +162,9 @@ def _normalize_raw_turn(raw_turn: dict) -> NormalizedTurn:
         turn_id=raw_turn["turn_id"],
         nodes=nodes,
         tool_calls=flat_tool_calls,
+        routing=_routing(raw_turn),
         response=raw_turn.get("conversation", {}).get("agent"),
+        customer_input=raw_turn.get("conversation", {}).get("customer"),
     )
 
 
@@ -171,7 +189,45 @@ def load_fixture_turns(path: Path) -> list[NormalizedTurn]:
 # ---------------------------------------------------------------------------
 
 
-def score_components(expected: list[NormalizedTurn], observed: list[NormalizedTurn]) -> dict:
+def _routing_semantic_scores(
+    expected: list[NormalizedTurn],
+    observed: list[NormalizedTurn],
+    judge_client,
+    judge_model: str,
+    judge_effort: str | None,
+) -> list[float | None]:
+    """One RS routing-judge verdict per observed turn (METRICS.md §5), aligned
+    to the golden turn with the same turn_id. None (N/A) for any turn with no
+    judge client, no expected routing, or a judge-call failure -- never 0.
+    Turn calls run concurrently; a cache hit resolves instantly."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from atf_eval.metrics.routing import semantic_routing_score
+
+    ref_by_id = {t.turn_id: t for t in expected}
+
+    def _one(obs: NormalizedTurn) -> float | None:
+        ref = ref_by_id.get(obs.turn_id)
+        if ref is None:
+            return None
+        return semantic_routing_score(
+            obs.customer_input or ref.customer_input or "",
+            ref, obs, judge_client, judge_model, judge_effort,
+        )
+
+    if judge_client is None or len(observed) <= 1:
+        return [_one(o) for o in observed]
+    with ThreadPoolExecutor(max_workers=min(8, len(observed))) as pool:
+        return list(pool.map(_one, observed))
+
+
+def score_components(
+    expected: list[NormalizedTurn],
+    observed: list[NormalizedTurn],
+    judge_client=None,
+    judge_model: str = "claude-opus-5",
+    judge_effort: str | None = None,
+) -> dict:
     exp_node_ids = [n.node_id for t in expected for n in t.nodes]
     obs_node_ids = [n.node_id for t in observed for n in t.nodes]
 
@@ -194,11 +250,17 @@ def score_components(expected: list[NormalizedTurn], observed: list[NormalizedTu
     exp_outcome = last_outcome(expected)
     obs_outcome = last_outcome(observed)
 
+    per_turn_semantic = _routing_semantic_scores(
+        expected, observed, judge_client, judge_model, judge_effort
+    )
+    applicable_semantic = [s for s in per_turn_semantic if s is not None]
+    rs_semantic = sum(applicable_semantic) / len(applicable_semantic) if applicable_semantic else None
+
     group_scores = {
         "nts": nts_conversation(expected, observed),
         "sts": sts_conversation(expected, observed),
         "tis": tis_conversation(expected, observed),
-        "rs": rs_conversation(expected, observed, per_turn_semantic_scores=[None] * len(observed)),
+        "rs": rs_conversation(expected, observed, per_turn_semantic_scores=per_turn_semantic),
         "os": os_conversation(expected, observed),
     }
     atf, coverage = atf_score(group_scores, DEFAULT_WEIGHTS)
@@ -221,7 +283,7 @@ def score_components(expected: list[NormalizedTurn], observed: list[NormalizedTu
         "tis_input_similarity": tool_input_similarity(exp_calls, obs_calls),
         "tis_order": tool_order_similarity(exp_tool_names, obs_tool_names),
         "tis_overall": group_scores["tis"],
-        "rs_semantic": None,  # no judge_client wired up -- see rs_overall note below
+        "rs_semantic": rs_semantic,  # mean LLM routing-judge verdict across applicable turns
         "rs_order": routing_order_similarity(expected, observed),
         "rs_overall": group_scores["rs"],
         "os_identity": outcome_identity_accuracy(exp_outcome, obs_outcome),
@@ -665,6 +727,277 @@ def render_dashboard(runs: list[dict], golden_summary: str, scenarios_dir: Path,
 
 
 # ---------------------------------------------------------------------------
+# LLM / multimodal evaluation (METRICS.md Part B, Groups 1-5)
+# ---------------------------------------------------------------------------
+
+
+def run_llm_evals(runs: list[dict], client, model: str, effort: str | None) -> None:
+    """Attach a ConversationLLMReport to each run under run['llm']. Runs are
+    processed a few at a time and each conversation fans its own judge calls
+    out to a thread pool, so the first full build is I/O-bound rather than
+    serial; every subsequent build is served from the on-disk cache."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from atf_eval.llm_evals import build_context, evaluate_conversation
+
+    def _one(run: dict) -> None:
+        ctx = build_context(run["scenario"], run["expected"], run["observed"])
+        run["llm"] = evaluate_conversation(
+            ctx, client, model=model, effort=effort, concurrency=6
+        )
+
+    if client is None or len(runs) <= 1:
+        for run in runs:
+            _one(run)
+        return
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        list(pool.map(_one, runs))
+
+
+_LLM_GROUP_TITLES = {
+    1: "Group 1 - Response Quality",
+    2: "Group 2 - Grounding & Knowledge",
+    3: "Group 3 - Safety, Policy & Compliance",
+    4: "Group 4 - Conversation Quality",
+    5: "Group 5 - Voice / Multimodal",
+}
+
+
+def llm_native_str(scoring_type: str, score) -> str:
+    if score is None:
+        return "N/A"
+    if scoring_type in ("ordinal_1_5", "ordinal_1_5_na"):
+        return f"{score}/5"
+    if scoring_type == "pass_fail":
+        return str(score)
+    if scoring_type == "sentiment":
+        return f"{score:+d}" if isinstance(score, int) else str(score)
+    if scoring_type == "count_severity":
+        return f"{score.get('severity','?')} ({score.get('count','?')})" if isinstance(score, dict) else str(score)
+    if scoring_type == "count":
+        return str(score)
+    if scoring_type == "categorical_confidence":
+        if isinstance(score, dict):
+            conf = score.get("confidence")
+            return f"{score.get('category','?')}" + (f" ({conf:.2f})" if isinstance(conf, (int, float)) else "")
+        return str(score)
+    return str(score)
+
+
+def _llm_band(normalized: float | None, status: str) -> str:
+    if status != "available" or normalized is None:
+        return "na"
+    if normalized >= 0.95:
+        return "good"
+    if normalized >= 0.80:
+        return "warning"
+    if normalized >= 0.50:
+        return "serious"
+    return "critical"
+
+
+def write_llm_csv(runs: list[dict], output_dir: Path, timestamp: str) -> Path | None:
+    if not any("llm" in r for r in runs):
+        return None
+    path = output_dir / f"atf_llm_metrics_{timestamp}.csv"
+    fields = [
+        "golden", "scenario", "deviation_type", "group", "metric_id", "metric_name",
+        "level", "scoring_type", "native_score", "normalized_0_1", "status", "reason",
+    ]
+    with path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fields)
+        writer.writeheader()
+        for run in runs:
+            report = run.get("llm")
+            if report is None:
+                continue
+            rows = []
+            for mid, results in report.turn_results.items():
+                rows.extend(results)
+            rows.extend(report.overall_results.values())
+            for r in rows:
+                writer.writerow({
+                    "golden": run.get("golden_key", ""),
+                    "scenario": run["scenario"],
+                    "deviation_type": run["deviation_type"],
+                    "group": r.group,
+                    "metric_id": r.metric_id + (f"@turn{r.turn_id}" if r.turn_id is not None else ""),
+                    "metric_name": r.metric_name,
+                    "level": r.level,
+                    "scoring_type": r.scoring_type,
+                    "native_score": "" if r.score is None else json.dumps(r.score) if isinstance(r.score, dict) else r.score,
+                    "normalized_0_1": "" if r.normalized is None else round(r.normalized, 4),
+                    "status": r.status,
+                    "reason": r.reason,
+                })
+    return path
+
+
+def render_llm_metric_row(overall, per_turn: list) -> str:
+    native = llm_native_str(overall.scoring_type, overall.score)
+    band = _llm_band(overall.normalized, overall.status)
+    status_tag = "" if overall.status == "available" else f'<span class="l-status">{overall.status.replace("_", " ")}</span>'
+    turn_rows = ""
+    shown_turns = [t for t in per_turn if t.turn_id is not None]
+    if shown_turns:
+        items = "".join(
+            f'<div class="l-turn"><span class="l-turn-id">turn {t.turn_id}</span>'
+            f'<span class="l-turn-score {_llm_band(t.normalized, t.status)}">{llm_native_str(t.scoring_type, t.score)}</span>'
+            f'<span class="l-turn-reason">{(t.reason or "")[:400]}</span></div>'
+            for t in shown_turns
+        )
+        turn_rows = f'<div class="l-turns">{items}</div>'
+    return f"""
+            <details class="l-metric">
+              <summary>
+                <span class="l-name">{overall.metric_name}<span class="l-level">{overall.level}</span></span>
+                <span class="l-score {band}">{native}</span>
+                {status_tag}
+              </summary>
+              <p class="l-reason">{(overall.reason or "")[:600]}</p>
+              {turn_rows}
+            </details>"""
+
+
+def render_llm_panel(idx: int, run: dict) -> str:
+    report = run["llm"]
+    groups_html = ""
+    for g in (1, 2, 3, 4, 5):
+        specs = [s for s in _llm_all_specs() if s.group == g]
+        rows = ""
+        scored_ct = 0
+        for spec in specs:
+            overall = report.overall_results.get(spec.metric_id)
+            if overall is None:
+                continue
+            per_turn = report.turn_results.get(spec.metric_id, [])
+            rows += render_llm_metric_row(overall, per_turn)
+            if overall.status == "available":
+                scored_ct += 1
+        na_note = ""
+        if g == 5 and scored_ct == 0:
+            na_note = ('<p class="l-group-note">All Group 5 metrics are N/A for these fixtures: the '
+                       'canonical trajectory carries no audio or timing evidence (METRICS.md &sect;18). '
+                       'The evaluators are implemented and will score the moment an audio-bearing trace is supplied.</p>')
+        groups_html += f"""
+          <details class="l-group"{' open' if g != 5 else ''}>
+            <summary><span class="l-group-title">{_LLM_GROUP_TITLES[g]}</span><span class="l-group-count">{scored_ct}/{len(specs)} scored</span></summary>
+            {na_note}{rows}
+          </details>"""
+    return f"""
+      <section id="lpanel-{idx}" class="l-panel">
+        <div class="l-panel-card">
+          <h3>{run['scenario']}</h3>
+          <p class="desc">{run['description'] or 'Golden trajectory scored against itself.'}</p>
+          {groups_html}
+        </div>
+      </section>"""
+
+
+def _llm_all_specs():
+    from atf_eval.llm_evals import ALL_METRICS
+    return ALL_METRICS
+
+
+def render_llm_dashboard(runs: list[dict], golden_summary: str, run_date: str, model: str) -> str:
+    runs_with = [r for r in runs if "llm" in r]
+    tab_inputs = "".join(
+        f'\n      <input type="radio" name="ltabs" id="ltab-{i}" class="l-tab-input"{" checked" if i == 1 else ""}>'
+        for i in range(1, len(runs_with) + 1)
+    )
+    tab_labels = "".join(
+        f'\n        <label for="ltab-{i}" class="l-tab-label">{r["scenario"].replace("_", " ").title()}</label>'
+        for i, r in enumerate(runs_with, start=1)
+    )
+    tab_css = "\n  ".join(
+        f'#ltab-{i}:checked ~ .l-tab-bar label[for="ltab-{i}"],' for i in range(1, len(runs_with) + 1)
+    ).rstrip(",") + " { background: var(--accent); border-color: var(--accent); color: #fff; }"
+    panel_css = "\n  ".join(
+        f'#ltab-{i}:checked ~ #lpanel-{i},' for i in range(1, len(runs_with) + 1)
+    ).rstrip(",") + " { display: block; }"
+    panels = "".join(render_llm_panel(i, r) for i, r in enumerate(runs_with, start=1))
+
+    return _LLM_SHELL.replace("{{RUN_DATE}}", run_date).replace("{{MODEL}}", model).replace(
+        "{{GOLDEN}}", golden_summary
+    ).replace("{{TAB_INPUTS}}", tab_inputs).replace("{{TAB_LABELS}}", tab_labels).replace(
+        "{{TAB_ACTIVE_CSS}}", tab_css
+    ).replace("{{PANEL_ACTIVE_CSS}}", panel_css).replace("{{PANELS}}", panels)
+
+
+_LLM_SHELL = """<title>ATF LLM Metrics</title>
+<style>
+  :root {
+    --bg:#f5f7fa; --surface:#fff; --surface-2:#eef1f6; --text:#1b2430; --text-muted:#5b6672;
+    --border:#d9dee6; --accent:#3b5bdb;
+    --good:#2f9e44; --warning:#f08c00; --serious:#e8590c; --critical:#c92a2a; --na:#868e96;
+    --good-bg:#ebfbee; --warning-bg:#fff4e6; --serious-bg:#fff0e6; --critical-bg:#fff5f5; --na-bg:#f1f3f5;
+  }
+  :root:not([data-theme="light"]) { color-scheme: light dark; }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg:#12151a; --surface:#1b2027; --surface-2:#232a33; --text:#e6e9ee; --text-muted:#9aa4b0;
+      --border:#333c47; --accent:#5c7cfa;
+      --good-bg:#1e2a1f; --warning-bg:#2b2417; --serious-bg:#2c2017; --critical-bg:#2c1a1a; --na-bg:#232a33;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg:#12151a; --surface:#1b2027; --surface-2:#232a33; --text:#e6e9ee; --text-muted:#9aa4b0;
+    --border:#333c47; --accent:#5c7cfa;
+    --good-bg:#1e2a1f; --warning-bg:#2b2417; --serious-bg:#2c2017; --critical-bg:#2c1a1a; --na-bg:#232a33;
+  }
+  body { background:var(--bg); color:var(--text); font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; margin:0; }
+  .wrap { max-width:1100px; margin:0 auto; padding:2rem 1.25rem 4rem; }
+  h1 { font-size:1.5rem; margin:0 0 .3rem; }
+  h3 { font-size:1.1rem; margin:0 0 .2rem; }
+  .sub { color:var(--text-muted); font-size:.9rem; margin:0 0 1.5rem; }
+  .sub code { background:var(--surface-2); padding:.1rem .35rem; border-radius:4px; }
+  .l-tab-input { position:absolute; opacity:0; pointer-events:none; }
+  .l-tab-bar { display:flex; flex-wrap:wrap; gap:.4rem; margin-bottom:1.2rem; }
+  .l-tab-label { padding:.4rem .8rem; border:1px solid var(--border); border-radius:999px; background:var(--surface);
+    font-size:.82rem; cursor:pointer; user-select:none; }
+  {{TAB_ACTIVE_CSS}}
+  .l-panel { display:none; }
+  {{PANEL_ACTIVE_CSS}}
+  .l-panel-card { background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:1.4rem; }
+  .desc { color:var(--text-muted); margin:.2rem 0 1.1rem; }
+  .l-group { border:1px solid var(--border); border-radius:9px; margin:.6rem 0; background:var(--surface-2); }
+  .l-group > summary { cursor:pointer; padding:.7rem .9rem; display:flex; justify-content:space-between; align-items:center; font-weight:600; }
+  .l-group-count { font-weight:400; font-size:.8rem; color:var(--text-muted); }
+  .l-group-note { margin:.2rem .9rem .8rem; font-size:.84rem; color:var(--text-muted); }
+  .l-metric { border-top:1px solid var(--border); }
+  .l-metric > summary { cursor:pointer; padding:.55rem .9rem; display:flex; align-items:center; gap:.6rem; list-style:none; }
+  .l-metric > summary::-webkit-details-marker { display:none; }
+  .l-name { flex:1; font-weight:500; }
+  .l-level { color:var(--text-muted); font-size:.72rem; margin-left:.5rem; text-transform:uppercase; letter-spacing:.03em; }
+  .l-score { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:.8rem; padding:.15rem .5rem; border-radius:5px; border:1px solid var(--border); }
+  .l-score.good{background:var(--good-bg);color:var(--good)} .l-score.warning{background:var(--warning-bg);color:var(--warning)}
+  .l-score.serious{background:var(--serious-bg);color:var(--serious)} .l-score.critical{background:var(--critical-bg);color:var(--critical)}
+  .l-score.na{background:var(--na-bg);color:var(--na)}
+  .l-status { font-size:.72rem; color:var(--na); text-transform:uppercase; letter-spacing:.03em; }
+  .l-reason { margin:.1rem .9rem .7rem; font-size:.86rem; color:var(--text-muted); }
+  .l-turns { margin:0 .9rem .8rem; display:flex; flex-direction:column; gap:.3rem; }
+  .l-turn { display:grid; grid-template-columns:4rem 4rem 1fr; gap:.5rem; align-items:start; font-size:.82rem; }
+  .l-turn-id { color:var(--text-muted); }
+  .l-turn-score { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
+  .l-turn-score.good{color:var(--good)} .l-turn-score.warning{color:var(--warning)}
+  .l-turn-score.serious{color:var(--serious)} .l-turn-score.critical{color:var(--critical)} .l-turn-score.na{color:var(--na)}
+  .l-turn-reason { color:var(--text-muted); }
+  footer { margin-top:2rem; color:var(--text-muted); font-size:.8rem; border-top:1px solid var(--border); padding-top:1rem; }
+</style>
+<div class="wrap">
+  <h1>ATF - LLM &amp; Multimodal Metrics</h1>
+  <p class="sub">METRICS.md Part B, Groups 1-5 &middot; judge model <code>{{MODEL}}</code> &middot; {{RUN_DATE}}<br>
+  golden: <code>{{GOLDEN}}</code> &middot; native per-metric scoring preserved (METRICS.md &sect;19); the 0-1 colour band is a display aid only.</p>
+  {{TAB_INPUTS}}
+  <div class="l-tab-bar">{{TAB_LABELS}}</div>
+  {{PANELS}}
+  <footer>N/A means insufficient evidence for that metric, never a zero (METRICS.md &sect;21). Group 5 is N/A across these
+  fixtures because the traces carry no audio/timing evidence. LLM rationale supports auditability but is not itself authoritative (METRICS.md &sect;23).</footer>
+</div>
+"""
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -681,6 +1014,14 @@ def main() -> None:
         default=str(REPO_ROOT / "agent-eval" / "tests" / "fixtures" / "scenarios"),
     )
     parser.add_argument("--output-dir", default=str(REPO_ROOT / "results"))
+    parser.add_argument("--judge-model", default="claude-opus-5",
+                        help="Anthropic model for RS's routing judge and the Group 1-5 LLM metrics.")
+    parser.add_argument("--effort", choices=["low", "medium", "high", "xhigh", "max"], default="low",
+                        help="Judge model effort (default: low -- fine for rubric scoring).")
+    parser.add_argument("--no-routing-judge", action="store_true",
+                        help="Skip RS's LLM routing judge -- RS reports N/A instead.")
+    parser.add_argument("--no-llm-evals", action="store_true",
+                        help="Skip the Group 1-5 LLM/multimodal metrics and their dashboard.")
     args = parser.parse_args()
 
     golden_dir = Path(args.golden_dir)
@@ -688,13 +1029,33 @@ def main() -> None:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # One judge client for both RS and the Group 1-5 metrics. None -> those
+    # dimensions report N/A (never 0); every deterministic metric is unaffected.
+    judge_client = None
+    if not (args.no_routing_judge and args.no_llm_evals):
+        from atf_eval.llm_evals import get_judge_client
+        judge_client = get_judge_client()
+        if judge_client is None:
+            print("[info] no ANTHROPIC_API_KEY (checked env + repo .env) -- RS and Group 1-5 "
+                  "LLM metrics will report N/A", file=sys.stderr)
+
+    rs_client = None if args.no_routing_judge else judge_client
+
     goldens = discover_goldens(golden_dir)
     if not goldens:
         raise SystemExit(f"No golden *.json files found in {golden_dir}")
     runs = discover_runs(goldens, scenarios_dir)
     for run in runs:
-        run["metrics"] = score_components(run["expected"], run["observed"])
+        run["metrics"] = score_components(
+            run["expected"], run["observed"], rs_client, args.judge_model, args.effort
+        )
     annotate_notes(runs)
+
+    if not args.no_llm_evals:
+        print("[info] running Group 1-5 LLM/multimodal metrics "
+              f"({'judge=' + args.judge_model if judge_client else 'no client -> all N/A'}) ...",
+              file=sys.stderr)
+        run_llm_evals(runs, judge_client, args.judge_model, args.effort)
 
     timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     run_date = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
@@ -709,11 +1070,26 @@ def main() -> None:
     print(f"  {group_csv}")
     print(f"  {component_csv}")
     print(f"  {dashboard_path}")
+
+    llm_csv = write_llm_csv(runs, output_dir, timestamp)
+    if llm_csv is not None:
+        llm_dashboard_html = render_llm_dashboard(runs, golden_summary, run_date, args.judge_model)
+        llm_dashboard_path = output_dir / f"atf_llm_dashboard_{timestamp}.html"
+        llm_dashboard_path.write_text(llm_dashboard_html, encoding="utf-8")
+        print(f"  {llm_csv}")
+        print(f"  {llm_dashboard_path}")
+
     for run in runs:
         m = run["metrics"]
         print(f"[{run.get('golden_key', '')}] {run['scenario']}: ATF={fmt(m['atf'])} NTS={fmt(m['nts_overall'])} "
               f"STS={fmt(m['sts_overall'])} TIS={fmt(m['tis_overall'])} "
               f"RS={fmt(m['rs_overall'])} OS={fmt(m['os_overall'])}")
+        if "llm" in run:
+            report = run["llm"]
+            avail = sum(1 for r in report.all_results() if r.status == "available")
+            print(f"    LLM: {avail} metric-results scored, "
+                  f"{sum(1 for r in report.overall_results.values() if r.status == 'available')}/"
+                  f"{len(report.overall_results)} overall metrics")
 
 
 if __name__ == "__main__":
